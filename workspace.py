@@ -19,6 +19,7 @@ class Workspace:
         # Directories
         self.workspace_dir = './data/workspaces'
         self.users_dir = './data/users'
+        self.reports_dir = './data/reports'
         self.directories = [self.workspace_dir, self.users_dir]
 
         for dir in self.directories:
@@ -157,7 +158,7 @@ class Workspace:
         # If workspace ID was informed...
         else:
             request_url = f'{request_url}/{workspace_id}/reports'
-            filename = f'users_{workspace_id}.xlsx'
+            filename = f'reports_{workspace_id}.xlsx'
 
             # Make the request
             r = requests.get(url=request_url, headers=self.headers)
@@ -170,7 +171,7 @@ class Workspace:
             if status == 200:
                 # Save to Excel file
                 df = pd.DataFrame(response)
-                df.to_excel(f'{self.users_dir}/{filename}', index=False)
+                df.to_excel(f'{self.reports_dir}/{filename}', index=False)
                 
                 return {'message': 'Success', 'content': response}
 
