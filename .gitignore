@@ -1,6 +1,6 @@
 .venv
 __pycache__
 main.ipynb
-data_hub.ipynb
 *.json
 *.xlsx
+*.csv
