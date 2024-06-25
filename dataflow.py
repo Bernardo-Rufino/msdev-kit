@@ -58,7 +58,7 @@ class Dataflow:
             if status == 200:
                 # Save to Excel file
                 df = pd.DataFrame(response)
-                df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
+                # df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
                 
                 return {'message': 'Success', 'content': response}
 
@@ -165,3 +165,49 @@ class Dataflow:
 
         else:
             return {'message': 'Missing parameters, please check.'}
+
+
+    def delete_dataflow(
+                    self, 
+                    workspace_id: str = '', 
+                    dataflow_id: str = '') -> Dict:
+            """
+            Add an user to a workspace.
+
+            Args:
+                workspace_id (str): workspace id where dataflow will be created.
+                dataflow_content (Dict): dataflow json with all details from it.
+
+            Returns:
+                Dict: status message.
+            """
+
+            # If both, user and workspace if are provided...
+            if (dataflow_id != '') & (workspace_id != ''):
+
+                request_url = self.main_url + f'/groups/{workspace_id}/dataflows/{dataflow_id}'
+               
+                # Make the request
+                r = requests.delete(url=request_url, headers=self.headers)
+
+                # Get HTTP status and content
+                status = r.status_code
+
+                # If success...
+                if status in (200, 202):
+                    return {'message': 'Success'}
+                
+                else:                
+                    
+                    try:
+                        # If any error happens, return message.
+                        response = json.loads(r.content)
+                        error_message = response['error']
+
+                    except:
+                        return {'message': 'Error reading JSON response'}
+                    
+                    return {'message': {'error': error_message, 'content': response}}
+
+            else:
+                return {'message': 'Missing parameters, please check.'}
