@@ -7,3 +7,5 @@ main.ipynb
 tests.py
 tests.ipynb
 *.env
+clean_up.ipynb
+*.zip
