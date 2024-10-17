@@ -349,3 +349,51 @@ class Dataset:
 
         else:
             return {'message': 'Missing parameters, please check.'}
+
+
+    def list_dataset_related_reports(
+                self, 
+                workspace_id: str = '', dataset_id: str = '') -> Dict:
+        """
+        List all reports related to a specific dataset.
+
+        Args:
+            workspace_id (str, optional): workspace id where dataset is published.
+            dataset_id (str, optional): dataset id to search reports from.
+
+        Returns:
+            Dict: status message and content.
+        """
+
+        # Main URL
+        request_url = f'{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/reports'
+
+        # If workspace ID was not informed, return error message...
+        if workspace_id == '' or dataset_id == '':
+            return {'message': 'Missing workspace id or dataset id, please check.', 'content': ''}
+
+        # If workspace ID and dataset ID was informed...
+        else: 
+            filename = f'dataset_reports_{dataset_id}.xlsx'
+
+            # Make the request
+            r = requests.get(url=request_url, headers=self.headers)
+
+            # Get HTTP status and content
+            status = r.status_code
+            response = json.loads(r.content).get('value', '')
+
+            # If success...
+            if status == 200:
+                # Save to Excel file
+                df = pd.DataFrame(response)
+                df.to_excel(f'{self.data_dir}/reports/{filename}', index=False)
+                
+                return {'message': 'Success', 'content': response}
+
+            else:                
+                # If any error happens, return message.
+                response = json.loads(r.content)
+                error_message = response['error']['message']
+
+                return {'message': {'error': error_message, 'content': response}}
