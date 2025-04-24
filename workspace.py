@@ -38,6 +38,8 @@ class Workspace:
                 self, 
                 workspace_id: str = '', 
                 workspace_name: str = '', 
+                identifier: str = '',
+                principal_type: str = 'App',
                 filters: str = '') -> Dict:
         """
         List all workspaces that the user has access to.
@@ -45,6 +47,8 @@ class Workspace:
         Args:
             workspace_id (str, optional): workspace id to search for.
             workspace_name (str, optional): workspace name to search for.
+            identifier (str, optional): identifier of the service principal.
+            principal_type (str, optional): principal type, 'App' for service accounts, 'Users' for usual users. Defaults to 'App'.
             filters (str, optional): filters to be applied.
                 - filters example:
                     - filters=f"contains(name,'{workspace_to_search}')%20or%20name%20eq%20'Dataflows'")
@@ -86,18 +90,42 @@ class Workspace:
         response = json.loads(r.content).get('value', '')
 
         # If success...
-        if status == 200:
-            # Save to Excel file
-            df = pd.DataFrame(response)
-            df.to_excel(f'{self.workspace_dir}/{filename}', index=False)
-            
-            return {'message': 'Success', 'content': response}
 
-        else:                
-            # If any error happens, return message.
+        if status == 200:
+            df = pd.DataFrame(response)
+
+            if not df.empty and 'id' in df.columns and identifier != '':
+                # If identifier was informed, get the role of the app in the workspace
+                app_access_rights = []
+
+                for index, workspace_id in enumerate(df['id']):
+                    role_url = f"{request_url}/{workspace_id}/users"
+                    role_response = requests.get(url=role_url, headers=self.headers)
+
+                    if role_response.status_code == 200:
+                        users_data = role_response.json().get("value", [])
+                        role = next(
+                            (
+                                user["groupUserAccessRight"]
+                                for user in users_data
+                                if user.get("identifier") == identifier
+                                and user.get("principalType") == principal_type
+                            ),
+                            ""
+                        )
+                    else:
+                        role = ""
+
+                    app_access_rights.append(role)
+                    response[index]["workspaceRole"] = role
+
+                df["workspaceRole"] = app_access_rights
+
+            df.to_excel(f'{self.workspace_dir}/{filename}', index=False)
+            return {'message': 'Success', 'content': response}
+        else:
             response = json.loads(r.content)
             error_message = response['error']['message']
-
             return {'message': {'error': error_message, 'content': response}}
 
 
