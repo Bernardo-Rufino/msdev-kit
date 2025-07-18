@@ -1,6 +1,6 @@
 ipykernel
 Office365-REST-Python-Client==2.4.1
-azure-identity==1.12.0
+azure-identity==1.16.1
 pyadomd==0.1.1
 pandas==2.2.3
 numpy==2.1.3
