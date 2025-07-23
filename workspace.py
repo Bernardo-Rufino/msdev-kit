@@ -34,6 +34,53 @@ class Workspace:
             create_directory(dir)
 
 
+    def get_worspace_details(
+                self, 
+                workspace_id: str = '') -> Dict:
+        """
+        Get details of a specific workspace.
+
+        Args:
+            workspace_id (str, optional): workspace id to search datasets from.
+
+        Returns:
+            Dict: status message and content.
+        """
+
+        # Main URL
+        request_url = f'{self.main_url}/groups/{workspace_id}'
+
+        # If workspace ID was not informed, return error message...
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+
+        # If workspace ID was informed...
+        else: 
+            filename = f'workspace_{workspace_id}.xlsx'
+
+            # Make the request
+            r = requests.get(url=request_url, headers=self.headers)
+
+            # Get HTTP status and content
+            status = r.status_code
+            response = json.loads(r.content)
+
+            # If success...
+            if status == 200:
+                # Save to Excel file
+                df = pd.DataFrame([response])
+                df.to_excel(f'{self.workspace_dir}/{filename}', index=False)
+
+                return {'message': 'Success', 'content': response}
+
+            else:                
+                # If any error happens, return message.
+                response = json.loads(r.content)
+                error_message = response['error']['message']
+
+                return {'message': {'error': error_message, 'content': response}}
+
+
     def list_workspaces(
                 self, 
                 workspace_id: str = '', 
