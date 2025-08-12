@@ -72,7 +72,7 @@ class Dataflow:
                 return {'message': {'error': error_message, 'content': response}}
             
 
-    def get_dataflow_details(self, workspace_id: str = '', dataflow_id: str = '') -> Dict:
+    def get_dataflow_details(self, workspace_id: str = '', dataflow_id: str = '', folder_name: str = '') -> Dict:
         """
         Get all details from a specific dataflows in a workspace_id that the user has access to.
 
@@ -105,10 +105,11 @@ class Dataflow:
             if status == 200:
                 
                 workspace = Workspace(self.token)
-                workspace_name = workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
+                if folder_name == '':
+                    folder_name = workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
                 
                 # Save to json file
-                filepath = f'{self.dataflows_dir}/{workspace_name}/dataflows'
+                filepath = f'{self.dataflows_dir}/{folder_name}/dataflows'
                 filename = f'{filepath}/{response.get("name", "")}.json'
                 os.makedirs(filepath, exist_ok=True)
 
