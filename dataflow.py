@@ -16,6 +16,7 @@ class Dataflow:
         Initialize variables.
         """
         self.main_url = 'https://api.powerbi.com/v1.0/myorg'
+        self.fabric_api_base_url = 'https://api.fabric.microsoft.com'
         self.token = token
         self.headers = {'Authorization': f'Bearer {self.token}'}
 
@@ -103,7 +104,6 @@ class Dataflow:
 
             # If success...
             if status == 200:
-                
                 workspace = Workspace(self.token)
                 if folder_name == '':
                     folder_name = workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
@@ -119,7 +119,6 @@ class Dataflow:
                 return {'message': 'Success', 'content': response}
 
             else:                
-                # If any error happens, return message.
                 response = json.loads(r.content)
                 error_message = response['error']['message']
 
@@ -268,3 +267,97 @@ class Dataflow:
                 error_message = response['error']['message']
 
                 return {'message': {'error': error_message, 'content': response}}
+            
+
+    def get_dataflow_gen2_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
+        """
+        Gets the definition of a Dataflow Gen2 from a specified workspace.
+
+        Args:
+            workspace_id (str): The ID of the workspace where the Dataflow Gen2 resides.
+            dataflow_id (str): The ID of the Dataflow Gen2 to retrieve the definition for.
+
+        Returns:
+            Dict: A dictionary containing the status ('Success' or error) and the Dataflow Gen2 definition content.
+        """
+        api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}/getDefinition'
+        
+        print(f"Extracting definition for dataflow {dataflow_id} from workspace {workspace_id}...")
+        response = requests.post(api_url, headers=self.headers)
+        
+        if response.status_code == 200:
+            definition = response.json()
+            print("Successfully extracted Dataflow Gen2 definition.")
+            return {'message': 'Success', 'content': definition}
+        else:
+            error_message = response.text
+            print(f"Error getting Dataflow Gen2 definition: {response.status_code} - {error_message}")
+            return {'message': {'error': error_message, 'status_code': response.status_code}}
+        
+
+    def create_dataflow_gen2_from_definition(self, workspace_id: str, display_name: str, definition: Dict) -> Dict:
+        """
+        Creates a new Dataflow Gen2 in a specified workspace from a given definition.
+
+        Args:
+            workspace_id (str): The ID of the target workspace where the Dataflow Gen2 will be created.
+            display_name (str): The display name for the new Dataflow Gen2.
+            definition (Dict): The complete JSON definition of the Dataflow Gen2 (obtained from get_dataflow_gen2_definition).
+
+        Returns:
+            Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2.
+        """
+        api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows'
+        
+        payload = {
+            "displayName": display_name,
+            "definition": definition['definition'],
+            "itemType": "dataflow"
+        }
+        
+        print(f"Creating Dataflow Gen2 '{display_name}' in workspace {workspace_id}...")
+        response = requests.post(api_url, headers=self.headers, data=json.dumps(payload))
+        
+        if response.status_code == 201:
+            new_item = response.json()
+            print(f"Successfully created Dataflow Gen2. New Item ID: {new_item['id']}")
+            return {'message': 'Success', 'content': new_item}
+        else:
+            error_message = response.text
+            print(f"Error creating Dataflow Gen2: {response.status_code} - {error_message}")
+            return {'message': {'error': error_message, 'status_code': response.status_code}}
+        
+
+    def update_dataflow_gen2_from_definition(self, workspace_id: str, dataflow_id: str, display_name: str, definition: Dict) -> Dict:
+        """
+        Updates an existing Dataflow Gen2 in a specified workspace with a new definition.
+
+        Args:
+            workspace_id (str): The ID of the workspace where the Dataflow Gen2 resides.
+            dataflow_id (str): The ID of the Dataflow Gen2 to update.
+            display_name (str): The new display name for the Dataflow Gen2 (can be the same as current).
+            definition (Dict): The complete JSON definition of the Dataflow Gen2 (obtained from get_dataflow_gen2_definition).
+
+        Returns:
+            Dict: A dictionary containing the status ('Success' or error) and the details of the updated Dataflow Gen2.
+        """
+        api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}'
+        
+        payload = {
+            "displayName": display_name,
+            "definition": definition['definition'],
+            "itemType": "dataflow"
+        }
+        
+        print(f"Updating Dataflow Gen2 '{display_name}' (ID: {dataflow_id}) in workspace {workspace_id}...")
+        response = requests.patch(api_url, headers=self.headers, data=json.dumps(payload))
+        
+        if response.status_code == 200:
+            updated_item = response.json()
+            print(f"Successfully updated Dataflow Gen2. Item ID: {updated_item['id']}")
+            return {'message': 'Success', 'content': updated_item}
+        else:
+            error_message = response.text
+            print(f"Error updating Dataflow Gen2: {response.status_code} - {error_message}")
+            return {'message': {'error': error_message, 'status_code': response.status_code}}
+
