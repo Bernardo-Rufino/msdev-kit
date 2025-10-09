@@ -68,7 +68,10 @@ class Dataset:
             else:                
                 # If any error happens, return message.
                 response = json.loads(r.content)
-                error_message = response['error']['message']
+                try:
+                    error_message = response['error']['message']
+                except KeyError as e:
+                    error_message = response['error']['pbi.error']
 
                 return {'message': {'error': error_message, 'content': response}}
 
@@ -283,7 +286,7 @@ class Dataset:
                 return {'message': {'error': error_message, 'content': response}}
 
         else:
-            return {'message': 'Missing parameters, please check.'}
+            return {'message': 'Missing parameters, please check.', 'content': ''}
 
 
     def update_user(
@@ -340,7 +343,7 @@ class Dataset:
                 return {'message': {'error': {'status': status, 'description': error_message}, 'content': response}}
 
         else:
-            return {'message': 'Missing parameters, please check.'}
+            return {'message': 'Missing parameters, please check.', 'content': ''}
 
 
     def remove_user(
@@ -402,7 +405,7 @@ class Dataset:
                 return {'message': {'error': {'status': status, 'description': error_message}, 'content': ''}}                    
 
         else:
-            return {'message': 'Missing parameters, please check.'}
+            return {'message': 'Missing parameters, please check.', 'content': ''}
 
 
     def list_dataset_related_reports(
@@ -443,7 +446,7 @@ class Dataset:
             return {'message': 'Success', 'content': dataset_reports}
 
         except Exception as error_message:
-            return {'message': {'error': error_message, 'content': dataset_reports}}
+            return {'message': {'error': error_message}, 'content': dataset_reports}
 
 
     def export_dataset_related_reports(
@@ -466,24 +469,26 @@ class Dataset:
             Dict: status message and content.
         """
 
+        print('Getting workspace name...')
         workspace_details = workspace.get_workspace_details(workspace_id=workspace_id)
-        workspace_name = workspace_details['content']['name']
+        workspace_name = workspace_details.get('content', []).get('name', 'unknown workspace')
 
+        print('Getting dataset name...')
         dataset_details = self.get_dataset_details(workspace_id=workspace_id, dataset_id=dataset_id)
-        dataset_name = dataset_details['content']['name']
+        dataset_name = dataset_details.get('content', []).get('name', 'unknown dataset')
 
+        print(f'Getting {dataset_name} reports list on {workspace_name}...')
         dataset_reports_list = self.list_dataset_related_reports(workspace_id=workspace_id, dataset_id=dataset_id, workspace=workspace)
 
         if 'error' in dataset_reports_list['message']:
-            return dataset_reports_list
+            return {'message': {'error': dataset_reports_list}}
 
         reports_to_export = []
         for report_data in dataset_reports_list['content']:
             if report_data['name'] != dataset_name:
                 reports_to_export.append(report_data)
 
-        print(f'Downloading {len(reports_to_export)} reports...')
-
+        print(f'Downloading reports connected to {dataset_name}.\n\nWorkspace: {workspace_name}\nTotal reports: {len(reports_to_export)}\n')
         for report_data in reports_to_export:
             report.export_report(
                 workspace_id=workspace_id,
