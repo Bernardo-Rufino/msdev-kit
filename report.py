@@ -1,8 +1,10 @@
 import os
 import json
+import base64
 import requests
 import pandas as pd
-import dataset
+from time import sleep
+from operations import Operations
 from typing import Dict
 from utilities import create_directory
 
@@ -123,20 +125,57 @@ class Report:
                 return {'message': {'error': error_message, 'content': response}}
 
 
-    def get_report_definition(
+    def get_legacy_report_json(
                 self,
                 workspace_id: str = '',
-                report_id: str = '') -> Dict:
+                report_id: str = '',
+                operations: Operations = None) -> Dict:
         """
-        List all report pages on a specific report_id and workspace_id that the user has access to.
+        Get a specific report_id definition.
 
         Args:
-            workspace_id (str, optional): workspace id where the report is.
-            report_id (str, optional): report id to search pages from.
+            workspace_id (str): workspace id where the report is.
+            report_id (str): report id to search pages from.
+            Operations (Operations): Operations class.
 
         Returns:
             Dict: status message and content.
         """
+        def _decode_nested_json(value):
+            """
+            Recursively decodes nested JSON strings inside dicts and lists.
+            """
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                    return _decode_nested_json(parsed)
+                except json.JSONDecodeError:
+                    return value
+            elif isinstance(value, dict):
+                return {k: _decode_nested_json(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [_decode_nested_json(v) for v in value]
+            return value
+
+        def _decode_base64_json_to_file(encoded_str: str, output_path: str) -> None:
+            """
+            Decodes a Base64-encoded JSON string, fixes escaped JSON fields,
+            and dumps the result into a formatted JSON file.
+
+            Args:
+                encoded_str (str): The Base64-encoded JSON string.
+                output_path (str): Path where the final JSON file will be saved.
+            """
+            decoded_bytes = base64.b64decode(encoded_str)
+            decoded_str = decoded_bytes.decode('utf-8')
+            raw_data = json.loads(decoded_str)
+            cleaned_data = _decode_nested_json(raw_data)
+
+            with open(output_path, 'w', encoding='utf-8') as file:
+                json.dump(cleaned_data, file, indent=4, ensure_ascii=False)
+
+            return cleaned_data
+
 
         # Main URL
         request_url = f'{self.main_fabric_url}/workspaces/{workspace_id}/reports/{report_id}/getDefinition'
@@ -160,13 +199,41 @@ class Report:
             # If success...
             if status == 202:
                 operation_id = r.headers.get('x-ms-operation-id')
-                return {'message': 'Success', 'content': {'workspace_id': workspace_id, 'report_id': report_id, 'operation_id': operation_id } }
+            
+                while True:
+                    active_operation_state = operations.get_operation_state(operation_id)
+                    print('Operation state:', active_operation_state)
+                    if active_operation_state:
+                        operation_state = active_operation_state.get('operation_state', '')
+                        if operation_state in ('Succeeded', 'Failed'):
+                            break
 
+                    sleep(1)
+
+                report_content = operations.get_operation_result(operation_id).get('content', '')
+                report_definition = report_content.get('definition')
+                report_format = report_definition.get('format')
+                report_parts = report_definition.get('parts')
+
+                if report_format == 'PBIR-Legacy':
+                    for part in report_parts:
+                        if part.get('path') == 'report.json':
+                            report_json_byte_string = part.get('payload')
+                            break
+                    
+                    report_json = _decode_base64_json_to_file(report_json_byte_string, 'decoded_clean.json')
+                    report_json_content = report_json.get('content')
+                    
+                    return {'message': 'Success', 'content': report_json_content}
+
+                # Report not on Legacy format.
+                else:
+                    return {'message': {'error': 'Report not on legacy format.', 'format': report_format}, 'content': report_definition}
             else:                
                 # If any error happens, return message.
                 error_message = response['error']['message']
 
-                return {'message': {'error': error_message, 'content': response}}
+                return {'message': {'error': error_message}, 'content': response}
 
 
     def export_report(
