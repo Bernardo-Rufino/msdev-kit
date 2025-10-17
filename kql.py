@@ -1,9 +1,6 @@
-import os
-import json
-import requests
+import re
 import pandas as pd
-import dataset
-from typing import Dict
+from pandas.core.frame import DataFrame
 from utilities import create_directory
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError, KustoMultiApiError
@@ -30,7 +27,7 @@ class KQLDatabase:
         create_directory(self.data_dir)
 
 
-    def query_kql_database(self, kql_query: str):
+    def query_kql_database(self, kql_query: str, sort_by: str = None) -> DataFrame:
         """
         Connects to a Kusto (KQL) database and executes a query.
 
@@ -43,10 +40,15 @@ class KQLDatabase:
         try:
             # Execute the query
             response = self.client.execute(self.database_name, kql_query)
+            print(response)
 
             # Convert the response to a pandas DataFrame
-            columns = kql_query.rsplit('| project', maxsplit=1)[1].strip().split(', ')
+            last_parameters_string = kql_query.rsplit('| project', maxsplit=1)[1].strip()
+            project_string = last_parameters_string.split('|', maxsplit=1)[0].strip().split(',')
+            columns = [re.sub(r'\s+', '', s) for s in project_string]
             df = pd.DataFrame(response.primary_results[0], columns=columns, dtype=str)
+            if sort_by:
+                df.sort_values(by=sort_by, inplace=True, ascending=False)
 
             return df
 

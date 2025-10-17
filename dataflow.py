@@ -1,10 +1,8 @@
 import os
-import uuid
 import json
 import requests
 import pandas as pd
-from pandas.core.frame import DataFrame
-from typing import Dict, List
+from typing import Dict
 from utilities import create_directory
 from workspace import Workspace
 

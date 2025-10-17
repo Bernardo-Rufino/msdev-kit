@@ -1,8 +1,5 @@
-import os
 import json
 import requests
-import pandas as pd
-import dataset
 from typing import Dict
 from utilities import create_directory
 
@@ -70,7 +67,7 @@ class Operations:
 
     def get_operation_result(
                 self, 
-                operation_id: str = '') -> str:
+                operation_id: str = '') -> Dict:
         """
         Get the operation result for a long running operation.
 
