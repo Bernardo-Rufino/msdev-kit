@@ -321,17 +321,22 @@ class Dataflow:
         
         payload = {
             "displayName": display_name,
-            "definition": definition['definition'],
-            "itemType": "dataflow"
+            "description": "",
+            "definition": definition['definition']
         }
         
         print(f"Creating Dataflow Gen2 '{display_name}' in workspace {workspace_id}...")
-        response = requests.post(api_url, headers=self.headers, data=json.dumps(payload))
+        response = requests.post(api_url, headers=self.headers, json=payload)
         
         if response.status_code == 201:
             new_item = response.json()
             print(f"Successfully created Dataflow Gen2. New Item ID: {new_item['id']}")
             return {'message': 'Success', 'content': new_item}
+        elif response.status_code == 400 and 'ItemDisplayNameAlreadyInUse' in response.text:
+            error_message = response.text
+            print(f"Error creating Dataflow Gen2: {response.status_code} - {error_message}")
+            print('Use update method instead.')
+            return {'message': {'error': error_message, 'status_code': response.status_code}}
         else:
             error_message = response.text
             print(f"Error creating Dataflow Gen2: {response.status_code} - {error_message}")
@@ -351,16 +356,14 @@ class Dataflow:
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the details of the updated Dataflow Gen2.
         """
-        api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}'
+        api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}/updateDefinition?updateMetadata=true'
         
         payload = {
-            "displayName": display_name,
-            "definition": definition['definition'],
-            "itemType": "dataflow"
+            "definition": definition['definition']
         }
         
         print(f"Updating Dataflow Gen2 '{display_name}' (ID: {dataflow_id}) in workspace {workspace_id}...")
-        response = requests.patch(api_url, headers=self.headers, data=json.dumps(payload))
+        response = requests.patch(api_url, headers=self.headers, json=payload)
         
         if response.status_code == 200:
             updated_item = response.json()
