@@ -7,5 +7,7 @@ __pycache__
 *.env
 *.zip
 *.pbix
+*.txt
 tests.py
+!requirements.txt
 !usage.ipynb

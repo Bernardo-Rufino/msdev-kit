@@ -1,0 +1,25 @@
+[project]
+name = "powerbi-api"
+description = "Power BI REST API wrapper for automating Power BI and Fabric operations"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "ipykernel",
+    "Office365-REST-Python-Client==2.4.1",
+    "azure-identity>=1.24.0,<2",
+    "pandas==2.2.3",
+    "numpy==2.1.3",
+    "openpyxl==3.1.5",
+    "python-dotenv==1.0.1",
+    "pyodbc==5.2.0",
+    "sqlalchemy==2.0.44",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "azure-kusto-data (>=6.0.1,<7.0.0)",
+]
+
+[tool.poetry]
+package-mode = false
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
