@@ -3,8 +3,8 @@ import json
 import requests
 import pandas as pd
 from typing import Dict
-from utilities import create_directory
-from workspace import Workspace
+from .utilities import create_directory
+from .workspace import Workspace
 
 
 class Capacity:
