@@ -1,7 +1,7 @@
 import re
 import pandas as pd
 from pandas.core.frame import DataFrame
-from utilities import create_directory
+from .utilities import create_directory
 from azure.kusto.data import KustoClient, KustoConnectionStringBuilder
 from azure.kusto.data.exceptions import KustoServiceError, KustoMultiApiError
 

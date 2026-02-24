@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 from pandas.core.frame import DataFrame
 from typing import Dict, List
-from utilities import create_directory
+from .utilities import create_directory
 
 
 class Workspace:

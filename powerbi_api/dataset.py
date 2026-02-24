@@ -2,10 +2,10 @@ import os
 import json
 import requests
 import pandas as pd
-import workspace
-import report
+from . import workspace
+from . import report
 from typing import Dict
-from utilities import create_directory
+from .utilities import create_directory
 
 
 class Dataset:

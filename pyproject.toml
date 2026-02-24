@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-package-mode = false
+packages = [{include = "powerbi_api"}]
 
 [build-system]
 requires = ["poetry-core"]
