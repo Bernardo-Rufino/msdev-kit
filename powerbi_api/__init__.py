@@ -9,4 +9,4 @@ from .operations import Operations
 from .kql import KQLDatabase
 from .lakehouse import Lakehouse
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
