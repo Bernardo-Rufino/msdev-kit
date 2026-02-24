@@ -15,7 +15,7 @@ pip install git+https://github.com/Bernardo-Rufino/powerbi-api.git
 To install a specific version/tag:
 
 ```shell
-pip install git+https://github.com/Bernardo-Rufino/powerbi-api.git@v0.1.0
+pip install git+https://github.com/Bernardo-Rufino/powerbi-api.git@v1.0.0
 ```
 
 If the repo is private, authenticate using a [Personal Access Token (PAT)](https://github.com/settings/tokens):
@@ -49,7 +49,15 @@ pip install -e .
 
 1. **Install the package** (see above)
 
-2. **Create a `.env` file** at `utils/.env`:
+2. **Set up credentials** — choose one of the two options:
+
+    **Option A – `.env` file** (local development): copy the example and fill in your values:
+
+    ```shell
+    cp utils/.env.example utils/.env
+    ```
+
+    Then edit `utils/.env`:
 
     ```shell
     TENANT_ID='<YOUR_TENANT_ID>'
@@ -60,6 +68,8 @@ pip install -e .
     AZURE_SUBSCRIPTION_ID='<YOUR_AZURE_SUBSCRIPTION_ID>'
     AZURE_RESOURCE_GROUP_ID='<YOUR_AZURE_RESOURCE_GROUP_ID>'
     ```
+
+    **Option B – environment variables** (CI/CD, Docker, etc.): if the variables are already set in the environment, the `.env` file is skipped automatically — no extra setup needed.
 
 3. **Authenticate**:
 
