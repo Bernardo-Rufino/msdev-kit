@@ -2,19 +2,52 @@
 
 Python wrapper for the Power BI REST API and Microsoft Fabric API, designed to automate workspace management, dataset operations, report handling, dataflows, and more.
 
+## Installation
+
+This is a **private package**. You must be granted access to the repository before installing.
+
+### Install from GitHub (recommended)
+
+```shell
+pip install git+https://github.com/Bernardo-Rufino/powerbi-api.git
+```
+
+To install a specific version/tag:
+
+```shell
+pip install git+https://github.com/Bernardo-Rufino/powerbi-api.git@v0.1.0
+```
+
+If the repo is private, authenticate using a [Personal Access Token (PAT)](https://github.com/settings/tokens):
+
+```shell
+pip install git+https://ghp_YOUR_TOKEN@github.com/Bernardo-Rufino/powerbi-api.git
+```
+
+### Install for local development
+
+```shell
+git clone https://github.com/Bernardo-Rufino/powerbi-api.git
+cd powerbi-api
+pip install -e .
+```
+
+### Granting access to others
+
+1. Go to the repository on GitHub
+2. **Settings → Collaborators → Add people**
+3. The invited user installs the package using their own PAT (as shown above)
+
+---
+
 ## Prerequisites
 
 - Python >= 3.10
-- [Poetry](https://python-poetry.org/) for dependency management
 - An Azure app registration with a client ID and client secret
 
 ## Setting Up
 
-1. **Install dependencies**:
-
-    ```shell
-    poetry install
-    ```
+1. **Install the package** (see above)
 
 2. **Create a `.env` file** at `utils/.env`:
 
@@ -31,7 +64,7 @@ Python wrapper for the Power BI REST API and Microsoft Fabric API, designed to a
 3. **Authenticate**:
 
     ```python
-    from auth import Auth
+    from powerbi_api import Auth
 
     auth = Auth(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
     token = auth.get_token()            # Power BI API

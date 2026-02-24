@@ -1,7 +1,7 @@
 import json
 import requests
 from typing import Dict
-from utilities import create_directory
+from .utilities import create_directory
 
 
 class Operations:

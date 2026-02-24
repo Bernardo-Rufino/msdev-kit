@@ -4,9 +4,9 @@ import base64
 import requests
 import pandas as pd
 from time import sleep
-from operations import Operations
+from .operations import Operations
 from typing import Dict, List, Any
-from utilities import create_directory
+from .utilities import create_directory
 
 
 class Report:
