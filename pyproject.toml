@@ -1,7 +1,7 @@
 [project]
 name = "powerbi-api"
 description = "Power BI REST API wrapper for automating Power BI and Fabric operations"
-version = "0.1.0"
+version = "1.0.0"
 requires-python = ">=3.10"
 dependencies = [
     "ipykernel",
@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.poetry]
-package-mode = false
+packages = [{include = "powerbi_api"}]
 
 [build-system]
 requires = ["poetry-core"]
