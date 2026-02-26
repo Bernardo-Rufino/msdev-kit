@@ -1,0 +1,35 @@
+[project]
+name = "fabric-api"
+description = "Power BI and Fabric REST API wrapper for automating operations"
+version = "1.0.3"
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    { name = "Bernardo Rufino", email = "contact@bernardorufino.com" }
+]
+
+dependencies = [
+    "ipykernel",
+    "Office365-REST-Python-Client==2.4.1",
+    "azure-identity>=1.24.0,<2",
+    "pandas==2.2.3",
+    "numpy==2.1.3",
+    "openpyxl==3.1.5",
+    "python-dotenv==1.0.1",
+    "pyodbc==5.2.0",
+    "sqlalchemy==2.0.44",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "azure-kusto-data (>=6.0.1,<7.0.0)",
+]
+
+[project.urls]
+Homepage = "https://github.com/Bernardo-Rufino/fabric-api"
+Repository = "https://github.com/Bernardo-Rufino/fabric-api"
+
+[tool.poetry]
+packages = [{include = "fabric_api"}]
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

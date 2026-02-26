@@ -1,0 +1,15 @@
+.venv
+__pycache__
+dist/
+*.ipynb
+*.json
+*.xlsx
+*.csv
+*.env
+*.zip
+*.pbix
+*.txt
+*.tmdl
+tests.py
+!requirements.txt
+!usage.ipynb
