@@ -295,7 +295,9 @@ class Dataflow:
 
     def get_dataflow_gen2_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
         """
-        Gets the definition of a Dataflow Gen2 from a specified workspace.
+        Gets the definition of a Dataflow Gen2 (CI/CD) from a specified workspace.
+        Only Dataflow Gen2 (CI/CD / native Fabric) items support definition export.
+        Standard Dataflow Gen2 items are not supported.
 
         Args:
             workspace_id (str): The ID of the workspace where the Dataflow Gen2 resides.
@@ -305,15 +307,30 @@ class Dataflow:
             Dict: A dictionary containing the status ('Success' or error) and the Dataflow Gen2 definition content.
         """
         api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}/getDefinition'
-        
+
         print(f"Extracting definition for dataflow {dataflow_id} from workspace {workspace_id}...")
         response = requests.post(api_url, headers=self.headers)
-        
+
         if response.status_code == 200:
             definition = response.json()
             print("Successfully extracted Dataflow Gen2 definition.")
             return {'message': 'Success', 'content': definition}
         else:
+            # getDefinition only works for Dataflow Gen2 (CI/CD / native Fabric).
+            # Standard Dataflow Gen2 items return an error here.
+            error_data = response.json() if response.headers.get('content-type', '').startswith('application/json') else {}
+            error_code = error_data.get('errorCode', '')
+
+            if response.status_code == 400 or error_code == 'UnknownError':
+                return {
+                    'message': {
+                        'error': 'This dataflow does not support definition export. '
+                                 'Only Dataflow Gen2 (CI/CD) items created via the native Fabric experience support this operation. '
+                                 'Standard Dataflow Gen2 items are not supported.',
+                        'status_code': response.status_code
+                    }
+                }
+
             error_message = response.text
             print(f"Error getting Dataflow Gen2 definition: {response.status_code} - {error_message}")
             return {'message': {'error': error_message, 'status_code': response.status_code}}
