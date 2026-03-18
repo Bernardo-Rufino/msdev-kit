@@ -140,7 +140,7 @@ Retrieve report metadata, definitions, visuals, and report-level measures.
 
 ### Dataflow
 
-Manage Power BI and Fabric dataflows, including Gen2.
+Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 
 | Method | Description |
 |---|---|
@@ -149,9 +149,60 @@ Manage Power BI and Fabric dataflows, including Gen2.
 | `create_dataflow(workspace_id, dataflow_content)` | Create a new Power BI dataflow. |
 | `delete_dataflow(workspace_id, dataflow_id, type='pbi')` | Delete a dataflow. Use `type='fabric'` for Fabric API. |
 | `export_dataflow_json(workspace_id, dataflow_id, dataflow_name)` | Export a dataflow definition as JSON. |
-| `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2. |
-| `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 from a definition. |
-| `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2. |
+| `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2 CI/CD item. |
+| `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
+| `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
+| `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. See details below. |
+
+#### `upgrade_to_gen2_cicd`
+
+Converts a Gen1 or Gen2 (standard) dataflow into a Gen2 CI/CD (native Fabric) artifact.
+
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `workspace_id` | `str` | *required* | The workspace ID where the source dataflow resides. |
+| `dataflow_id` | `str` | *required* | The ID of the source dataflow to upgrade. |
+| `display_name` | `str` | `''` | Display name for the new artifact. If empty, Gen1 auto-generates a name (e.g. `original_copy1`); Gen2 appends `_cicd` to the original name. |
+| `description` | `str` | `''` | Description for the new artifact (Gen1 only). If empty, copies from the source. |
+| `destination_workspace_id` | `str` | `''` | Target workspace for the new artifact. If empty, creates in the same workspace as the source. |
+| `include_schedule` | `bool` | `False` | Whether to migrate the refresh schedule from the source (Gen1 only). The schedule is copied in a disabled state. |
+| `source_type` | `str` | `'gen1'` | Type of source dataflow: `'gen1'` or `'gen2'`. |
+
+**Gen1 → Gen2 CI/CD:**
+Uses the Power BI [`saveAsNativeArtifact`](https://learn.microsoft.com/en-us/rest/api/power-bi/dataflows/save-dataflow-gen-one-as-dataflow-gen-two) API (preview). This handles connection format updates, sensitivity labels, and optionally migrates refresh schedules. Non-fatal warnings (e.g. `FailedToCopySchedule`, `ConnectionsUpdateFailed`) are returned in the `warnings` field without failing the operation.
+
+**Gen2 (standard) → Gen2 CI/CD:**
+Fetches the dataflow definition via the PBI API and converts it to the CI/CD format (`mashup.pq`, `queryMetadata.json`, `.platform`). The conversion transforms the M document (removes internal pipeline queries, adds `[StagingDefinition]` and `[DataDestinations]` annotations, simplifies `DataDestination` queries), builds the query metadata from `pbi:mashup` fields, and creates the artifact via the Fabric API.
+
+If the dataflow is already Gen2 CI/CD, it re-creates a copy with the given display name.
+
+**Example:**
+
+```python
+from fabric_api import Auth, Dataflow
+
+auth = Auth(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
+
+# Gen1 → Gen2 CI/CD
+df = Dataflow(auth.get_token('fabric'))
+result = df.upgrade_to_gen2_cicd(
+    workspace_id='<workspace_id>',
+    dataflow_id='<gen1_dataflow_id>',
+    display_name='my_dataflow_cicd',
+    include_schedule=True,
+    source_type='gen1'
+)
+
+# Gen2 (standard) → Gen2 CI/CD, to a different workspace
+result = df.upgrade_to_gen2_cicd(
+    workspace_id='<source_workspace_id>',
+    dataflow_id='<gen2_dataflow_id>',
+    destination_workspace_id='<target_workspace_id>',
+    source_type='gen2'
+)
+```
 
 ### Capacity
 
