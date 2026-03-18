@@ -1,5 +1,7 @@
 import os
+import re
 import json
+import base64
 import requests
 import pandas as pd
 from typing import Dict
@@ -404,4 +406,334 @@ class Dataflow:
             error_message = response.text
             print(f"Error updating Dataflow Gen2: {response.status_code} - {error_message}")
             return {'message': {'error': error_message, 'status_code': response.status_code}}
+
+
+    def _transform_mashup_to_cicd(self, document: str, gen2_content: Dict) -> str:
+        """
+        Transforms a Gen2 standard M document into the CI/CD mashup.pq format.
+
+        Key transformations:
+        - Adds [StagingDefinition] header if fastCopy is enabled.
+        - Adds [DataDestinations] annotations before queries that write to destinations.
+        - Removes internal pipeline queries (DefaultStaging, FastCopyStaging, *_WriteToDataDestination, *_TransformForWriteToDataDestination).
+        - Removes [Staging = "..."] annotations.
+        - Simplifies DataDestination queries by removing NavigationTable.CreateTableOnDemand wrapper.
+        """
+        result = document
+
+        # 1. Add StagingDefinition if fastCopy is enabled
+        if gen2_content.get('ppdf:fastCopy', False):
+            result = '[StagingDefinition = [Kind = "FastCopy"]]\n' + result
+
+        # 2. Identify queries with data destinations (those that have _WriteToDataDestination counterparts)
+        dest_queries = re.findall(r'shared\s+(\w+)_WriteToDataDestination\s*=', result)
+
+        # 3. Remove [Staging = "..."] annotations
+        result = re.sub(r'\[Staging\s*=\s*"[^"]*"\]\r?\n', '', result)
+
+        # 4. Remove internal pipeline queries
+        internal_queries = ['DefaultStaging', 'FastCopyStaging']
+        for qname in dest_queries:
+            internal_queries.append(f'{qname}_WriteToDataDestination')
+            internal_queries.append(f'{qname}_TransformForWriteToDataDestination')
+
+        for query_name in internal_queries:
+            pattern = rf'shared\s+{re.escape(query_name)}\s*=\s*let[\s\S]*?;\r?\n'
+            result = re.sub(pattern, '', result)
+
+        # 5. Add [DataDestinations] annotation before queries that have destinations
+        for query_name in dest_queries:
+            dd_annotation = (
+                f'[DataDestinations = {{[Definition = [Kind = "Reference", '
+                f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
+                f'Settings = [Kind = "Automatic", TypeSettings = [Kind = "Table"]]]}}]\n'
+            )
+            result = result.replace(f'shared {query_name} =', f'{dd_annotation}shared {query_name} =')
+
+        # 6. Simplify DataDestination queries - remove NavigationTable.CreateTableOnDemand wrapper
+        result = re.sub(
+            r',\r?\n\s*Table\s*=\s*NavigationTable\.CreateTableOnDemand\([^\n]*\)\r?\nin\r?\n\s*Table;',
+            '\r\nin\r\n  TableNavigation;\r\n',
+            result
+        )
+
+        return result
+
+
+    def _build_query_metadata(self, gen2_content: Dict, compute_engine_settings: Dict = None) -> Dict:
+        """
+        Builds the queryMetadata.json content for CI/CD from Gen2 standard PBI API response.
+
+        Args:
+            gen2_content (Dict): Full response from PBI API.
+            compute_engine_settings (Dict, optional): Override compute engine settings.
+                If not provided, derives allowFastCopy from ppdf:fastCopy.
+        """
+        mashup = gen2_content.get('pbi:mashup', {})
+        queries_metadata = mashup.get('queriesMetadata', {})
+        annotations = gen2_content.get('annotations', [])
+
+        # Internal queries to exclude
+        internal_suffixes = ('_WriteToDataDestination', '_TransformForWriteToDataDestination')
+        internal_names = ('DefaultStaging', 'FastCopyStaging')
+
+        # Filter and transform queriesMetadata
+        cicd_queries = {}
+        for name, meta in queries_metadata.items():
+            if name in internal_names or any(name.endswith(s) for s in internal_suffixes):
+                continue
+            entry = {
+                'queryId': meta.get('queryId', ''),
+                'queryName': meta.get('queryName', name),
+                'loadEnabled': False
+            }
+            if meta.get('queryGroupId'):
+                entry['queryGroupId'] = meta['queryGroupId']
+            if name.endswith('_DataDestination'):
+                entry['isHidden'] = True
+            cicd_queries[name] = entry
+
+        # Extract query groups from annotations
+        query_groups = []
+        for ann in annotations:
+            if ann.get('name') == 'pbi:QueryGroups':
+                raw_groups = json.loads(ann['value'])
+                for g in raw_groups:
+                    group = {
+                        'id': g['Id'],
+                        'name': g['Name'],
+                        'description': g.get('Description', '')
+                    }
+                    if g.get('Order') is not None:
+                        group['order'] = g['Order']
+                    query_groups.append(group)
+                break
+
+        # Build connections from connectionOverrides
+        connections = []
+        for conn in mashup.get('connectionOverrides', []):
+            connections.append({
+                'path': conn['path'],
+                'kind': conn['kind']
+            })
+
+        # Build computeEngineSettings
+        if compute_engine_settings is not None:
+            engine_settings = compute_engine_settings
+        else:
+            fast_copy = gen2_content.get('ppdf:fastCopy', False)
+            if fast_copy:
+                # Fast copy enabled = Fabric default, empty settings is sufficient
+                engine_settings = {}
+            else:
+                engine_settings = {'allowFastCopy': False}
+
+        return {
+            'formatVersion': '202502',
+            'computeEngineSettings': engine_settings,
+            'name': gen2_content.get('name', ''),
+            'queryGroups': query_groups,
+            'documentLocale': gen2_content.get('culture', 'en-US'),
+            'queriesMetadata': cicd_queries,
+            'connections': connections
+        }
+
+
+    def _convert_gen2_to_cicd_definition(self, gen2_content: Dict, display_name: str, compute_engine_settings: Dict = None) -> Dict:
+        """
+        Converts a Gen2 standard dataflow definition (from PBI API) to Gen2 CI/CD definition format (Fabric API).
+
+        Builds three definition parts:
+        - mashup.pq: Transformed Power Query M script.
+        - queryMetadata.json: Query metadata, groups, connections.
+        - .platform: Platform metadata with display name.
+
+        Args:
+            gen2_content (Dict): Full response from PBI API GET /groups/{ws}/dataflows/{df}.
+            display_name (str): Display name for the new CI/CD dataflow.
+            compute_engine_settings (Dict, optional): Override compute engine settings
+                (e.g. allowFastCopy, allowPartitionedCompute, allowModernEvaluationEngine).
+                If not provided, derives from source properties.
+
+        Returns:
+            Dict: CI/CD definition payload ready for create_dataflow_gen2_from_definition, or None if conversion fails.
+        """
+        mashup = gen2_content.get('pbi:mashup', {})
+        document = mashup.get('document', '')
+
+        if not document:
+            return None
+
+        # Build mashup.pq
+        mashup_pq = self._transform_mashup_to_cicd(document, gen2_content)
+
+        # Build queryMetadata.json
+        query_metadata = self._build_query_metadata(gen2_content, compute_engine_settings)
+
+        # Build .platform
+        platform = {
+            "$schema": "https://developer.microsoft.com/json-schemas/fabric/gitIntegration/platformProperties/2.0.0/schema.json",
+            "metadata": {
+                "type": "Dataflow",
+                "displayName": display_name
+            },
+            "config": {
+                "version": "2.0",
+                "logicalId": "00000000-0000-0000-0000-000000000000"
+            }
+        }
+
+        # Encode all parts as base64
+        mashup_pq_b64 = base64.b64encode(mashup_pq.encode('utf-8')).decode('utf-8')
+        query_metadata_b64 = base64.b64encode(json.dumps(query_metadata, indent=2).encode('utf-8')).decode('utf-8')
+        platform_b64 = base64.b64encode(json.dumps(platform, indent=2).encode('utf-8')).decode('utf-8')
+
+        return {
+            "definition": {
+                "parts": [
+                    {"path": "queryMetadata.json", "payload": query_metadata_b64, "payloadType": "InlineBase64"},
+                    {"path": "mashup.pq", "payload": mashup_pq_b64, "payloadType": "InlineBase64"},
+                    {"path": ".platform", "payload": platform_b64, "payloadType": "InlineBase64"}
+                ]
+            }
+        }
+
+
+    def upgrade_to_gen2_cicd(
+                self,
+                workspace_id: str,
+                dataflow_id: str,
+                display_name: str = '',
+                description: str = '',
+                destination_workspace_id: str = '',
+                include_schedule: bool = False,
+                compute_engine_settings: Dict = None,
+                source_type: str = 'gen1') -> Dict:
+        """
+        Upgrades a Dataflow Gen1 or Gen2 (standard) to Dataflow Gen2 CI/CD (native Fabric).
+
+        For Gen1: Uses the Power BI saveAsNativeArtifact API (preview) to convert directly.
+        Handles connection format updates, sensitivity labels, and optionally migrates refresh schedules.
+
+        For Gen2 (standard): Fetches the definition via PBI API and converts it to the CI/CD format
+        (mashup.pq, queryMetadata.json, .platform), then creates a new Dataflow Gen2 CI/CD via Fabric API.
+        If the dataflow is already CI/CD, it re-creates it with the given display name.
+
+        Note: This method creates a NEW Dataflow Gen2 CI/CD item. The original dataflow is NOT
+        deleted automatically. You can use delete_dataflow() to remove the original after verifying
+        the new dataflow works correctly.
+
+        Args:
+            workspace_id (str): The ID of the workspace where the source dataflow resides.
+            dataflow_id (str): The ID of the source dataflow to upgrade.
+            display_name (str, optional): The display name for the new Dataflow Gen2 CI/CD.
+                If not provided, for Gen1 the API auto-generates a name (e.g. original_name_copy1).
+                For Gen2, uses the original dataflow name with '_cicd' suffix.
+            description (str, optional): Description for the new artifact. If not provided,
+                copies the description from the source dataflow (Gen1 only).
+            destination_workspace_id (str, optional): The ID of the workspace where the new dataflow
+                will be created. If not provided, creates in the same workspace as the source.
+            include_schedule (bool, optional): Whether to migrate the refresh schedule from the source
+                dataflow (Gen1 only). The schedule is copied in disabled state. Defaults to False.
+            compute_engine_settings (Dict, optional): Compute engine settings for the new CI/CD dataflow
+                (Gen2 only). Supported keys: allowFastCopy (bool), allowPartitionedCompute (bool),
+                allowModernEvaluationEngine (bool). If not provided, derives allowFastCopy from the
+                source dataflow's ppdf:fastCopy setting.
+            source_type (str): Type of source dataflow - 'gen1' or 'gen2'. Defaults to 'gen1'.
+
+        Returns:
+            Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2 CI/CD.
+        """
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+
+        if dataflow_id == '':
+            return {'message': 'Missing dataflow id, please check.', 'content': ''}
+
+        if source_type not in ('gen1', 'gen2'):
+            return {'message': 'source_type must be "gen1" or "gen2".', 'content': ''}
+
+        # If no destination workspace provided, use the source workspace
+        target_workspace_id = destination_workspace_id if destination_workspace_id != '' else workspace_id
+
+        if source_type == 'gen1':
+            # Use the dedicated saveAsNativeArtifact API for Gen1 → Gen2 CI/CD conversion
+            request_url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}/saveAsNativeArtifact'
+
+            body = {
+                'includeSchedule': include_schedule
+            }
+
+            if display_name != '':
+                body['displayName'] = display_name
+
+            if description != '':
+                body['description'] = description
+
+            if target_workspace_id != workspace_id:
+                body['targetWorkspaceId'] = target_workspace_id
+
+            print(f"Converting Gen1 dataflow {dataflow_id} to Gen2 CI/CD via saveAsNativeArtifact...")
+            r = requests.post(url=request_url, headers=self.headers, json=body)
+
+            if r.status_code == 200:
+                response = json.loads(r.content)
+                artifact = response.get('artifactMetadata', {})
+                errors = response.get('errors', [])
+
+                if errors:
+                    print(f"Migration completed with warnings: {errors}")
+
+                print(f"Successfully created Gen2 CI/CD. New artifact ID: {artifact.get('objectId', 'N/A')}")
+                return {'message': 'Success', 'content': response, 'warnings': errors}
+            else:
+                try:
+                    response = json.loads(r.content)
+                    error_message = response.get('error', {}).get('message', r.text)
+                except Exception:
+                    error_message = r.text
+                print(f"Error converting Gen1 dataflow: {r.status_code} - {error_message}")
+                return {'message': {'error': error_message, 'status_code': r.status_code}}
+
+        elif source_type == 'gen2':
+            # For Gen2: first check if already CI/CD via Fabric API
+            print(f"Checking if dataflow {dataflow_id} is already Gen2 CI/CD...")
+            gen2_definition = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
+
+            if gen2_definition.get('message') == 'Success':
+                # Already a CI/CD dataflow - re-create with the definition
+                if display_name == '':
+                    display_name = gen2_definition['content'].get('displayName', 'dataflow') + '_cicd'
+
+                print(f"Dataflow is already Gen2 CI/CD. Creating copy as '{display_name}' in workspace {target_workspace_id}...")
+                return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
+
+            # Standard Gen2 - fetch from PBI API and convert
+            print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
+            request_url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}'
+            r = requests.get(url=request_url, headers=self.headers)
+
+            if r.status_code != 200:
+                try:
+                    response = json.loads(r.content)
+                    error_message = response['error']['message']
+                except Exception:
+                    error_message = r.text
+                return {'message': {'error': f'Failed to get dataflow definition: {error_message}', 'status_code': r.status_code}}
+
+            pbi_content = json.loads(r.content)
+
+            # If display_name not provided, use original name with _cicd suffix
+            if display_name == '':
+                display_name = pbi_content.get('name', 'dataflow') + '_cicd'
+
+            # Convert PBI API definition to CI/CD format
+            definition = self._convert_gen2_to_cicd_definition(pbi_content, display_name, compute_engine_settings)
+
+            if definition is None:
+                return {'message': {'error': 'Could not extract mashup document from dataflow. The dataflow may not contain any queries.', 'content': ''}}
+
+            # Create the new Gen2 CI/CD dataflow
+            print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")
+            return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
 
