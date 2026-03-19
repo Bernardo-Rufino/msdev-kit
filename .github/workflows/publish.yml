@@ -63,6 +63,14 @@ jobs:
           open('pyproject.toml', 'w').write(text)
           "
 
+          # Update __init__.py with the new version
+          python -c "
+          import re
+          text = open('fabric_api/__init__.py').read()
+          text = re.sub(r'(__version__\s*=\s*\")([^\"]+)(\")', r'\g<1>${NEW_VERSION}\3', text)
+          open('fabric_api/__init__.py', 'w').write(text)
+          "
+
       - name: Build package
         run: python -m build
 

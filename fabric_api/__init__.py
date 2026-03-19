@@ -7,6 +7,6 @@ from .capacity import Capacity
 from .admin import Admin
 from .operations import Operations
 from .kql import KQLDatabase
-from .lakehouse import Lakehouse
+from .database import Database
 
-__version__ = "1.0.2"
+__version__ = "1.0.7"

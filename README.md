@@ -67,6 +67,8 @@ pip install -e .
     CLIENT_SECRET_SHAREPOINT='<YOUR_SHAREPOINT_CLIENT_SECRET>'
     AZURE_SUBSCRIPTION_ID='<YOUR_AZURE_SUBSCRIPTION_ID>'
     AZURE_RESOURCE_GROUP_ID='<YOUR_AZURE_RESOURCE_GROUP_ID>'
+    FABRIC_SQL_ENDPOINT='<YOUR_FABRIC_SQL_ENDPOINT>'
+    FABRIC_DATABASE='<YOUR_FABRIC_DATABASE>'
     ```
 
     **Option B – environment variables** (CI/CD, Docker, etc.): if the variables are already set in the environment, the `.env` file is skipped automatically — no extra setup needed.
@@ -255,13 +257,13 @@ Query Kusto (KQL) databases in Microsoft Fabric.
 |---|---|
 | `query_kql_database(kql_query, sort_by)` | Execute a KQL query and return results as a DataFrame. |
 
-### Lakehouse
+### Database
 
 Query SQL databases (Lakehouse) via ODBC.
 
 | Method | Description |
 |---|---|
-| `execute_query(query)` | Execute a SQL query against a lakehouse database. |
+| `execute_query(query)` | Execute a SQL query against a fabric database (lakehouse, warehouse or sql database). |
 
 ## Limitations
 

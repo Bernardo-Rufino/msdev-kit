@@ -1,7 +1,7 @@
 [project]
 name = "fabric-api"
 description = "Power BI and Fabric REST API wrapper for automating operations"
-version = "1.0.3"
+version = "1.0.7"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}

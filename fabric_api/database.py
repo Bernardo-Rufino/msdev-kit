@@ -4,7 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 
 
-class Lakehouse:
+class Database:
 
     def __init__(self, server: str, database: str, client_id: str, client_secret: str):
         self.server = server
