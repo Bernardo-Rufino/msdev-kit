@@ -168,7 +168,18 @@ Converts a Gen1 or Gen2 (standard) dataflow into a Gen2 CI/CD (native Fabric) ar
 | `description` | `str` | `''` | Description for the new artifact (Gen1 only). If empty, copies from the source. |
 | `destination_workspace_id` | `str` | `''` | Target workspace for the new artifact. If empty, creates in the same workspace as the source. |
 | `include_schedule` | `bool` | `False` | Whether to migrate the refresh schedule from the source (Gen1 only). The schedule is copied in a disabled state. |
+| `compute_engine_settings` | `Dict` | `None` | Compute engine settings for the new CI/CD dataflow (Gen2 only). See supported keys below. If not provided, `allowFastCopy` is derived from the source dataflow. |
 | `source_type` | `str` | `'gen1'` | Type of source dataflow: `'gen1'` or `'gen2'`. |
+
+**`compute_engine_settings` keys (Gen2 only):**
+
+| Key | Type | Description |
+|---|---|---|
+| `allowFastCopy` | `bool` | Enable/disable fast copy (staging). Auto-derived from source if not provided. |
+| `allowPartitionedCompute` | `bool` | Enable/disable partitioned compute. Defaults to `false` in Fabric. |
+| `allowModernEvaluationEngine` | `bool` | Enable/disable query evaluation (modern evaluation engine). Defaults to `false` in Fabric. |
+
+> **Note:** The "Allow combining data from multiple sources" privacy setting (`pbi:mashup.fastCombine`) is not part of the CI/CD definition format. It must be configured manually via the Fabric portal after creation.
 
 **Gen1 → Gen2 CI/CD:**
 Uses the Power BI [`saveAsNativeArtifact`](https://learn.microsoft.com/en-us/rest/api/power-bi/dataflows/save-dataflow-gen-one-as-dataflow-gen-two) API (preview). This handles connection format updates, sensitivity labels, and optionally migrates refresh schedules. Non-fatal warnings (e.g. `FailedToCopySchedule`, `ConnectionsUpdateFailed`) are returned in the `warnings` field without failing the operation.
@@ -195,12 +206,17 @@ result = df.upgrade_to_gen2_cicd(
     source_type='gen1'
 )
 
-# Gen2 (standard) → Gen2 CI/CD, to a different workspace
+# Gen2 (standard) → Gen2 CI/CD with compute settings
 result = df.upgrade_to_gen2_cicd(
     workspace_id='<source_workspace_id>',
     dataflow_id='<gen2_dataflow_id>',
     destination_workspace_id='<target_workspace_id>',
-    source_type='gen2'
+    source_type='gen2',
+    compute_engine_settings={
+        'allowFastCopy': False,
+        'allowPartitionedCompute': True,
+        'allowModernEvaluationEngine': True
+    }
 )
 ```
 

@@ -29,6 +29,38 @@ class Dataflow:
             create_directory(dir)
 
 
+    def _get_dataflow_pbi_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
+        """
+        Fetches a dataflow definition from the Power BI REST API.
+        Works for Gen1 and Gen2 (standard) dataflows.
+
+        Args:
+            workspace_id (str): The workspace ID.
+            dataflow_id (str): The dataflow ID.
+
+        Returns:
+            Dict: A dictionary with 'message' ('Success' or error) and 'content' (full API response).
+        """
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+
+        if dataflow_id == '':
+            return {'message': 'Missing dataflow id, please check.', 'content': ''}
+
+        request_url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}'
+        r = requests.get(url=request_url, headers=self.headers)
+
+        if r.status_code == 200:
+            return {'message': 'Success', 'content': json.loads(r.content)}
+        else:
+            try:
+                response = json.loads(r.content)
+                error_message = response['error']['message']
+            except Exception:
+                error_message = r.text
+            return {'message': {'error': error_message, 'status_code': r.status_code}}
+
+
     def list_dataflows(self, workspace_id: str = '', type: str = 'pbi') -> Dict:
         """
         List all dataflows in a workspace_id that the user has access to.
@@ -87,54 +119,35 @@ class Dataflow:
 
     def get_dataflow_details(self, workspace_id: str = '', dataflow_id: str = '', folder_name: str = '') -> Dict:
         """
-        Get all details from a specific dataflows in a workspace_id that the user has access to.
+        Get all details from a specific dataflow in a workspace and save to a JSON file.
 
         Args:
             workspace_id (str, optional): workspace id to search for.
             dataflow_id (str, optional): dataflow id to get the details.
+            folder_name (str, optional): folder name to save the JSON file. If not provided, uses the workspace name.
 
         Returns:
             Dict: status message and content.
         """
-        # Main URL
-        request_url = self.main_url + '/groups'
+        result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
 
-        # If workspace ID was not informed, return error message...
-        if workspace_id == '':
-            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if result.get('message') != 'Success':
+            return result
 
-        # If workspace ID was informed...
-        else:
-            request_url = f'{request_url}/{workspace_id}/dataflows/{dataflow_id}'
+        response = result['content']
 
-            # Make the request
-            r = requests.get(url=request_url, headers=self.headers)
+        if folder_name == '':
+            folder_name = self.workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
 
-            # Get HTTP status and content
-            status = r.status_code
-            response = json.loads(r.content)
+        # Save to json file
+        filepath = f'{self.dataflows_dir}/{folder_name}/dataflows'
+        filename = f'{filepath}/{response.get("name", "")}.json'
+        os.makedirs(filepath, exist_ok=True)
 
-            # If success...
-            if status == 200:
-                workspace = Workspace(self.token)
-                if folder_name == '':
-                    folder_name = workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
-                
-                # Save to json file
-                filepath = f'{self.dataflows_dir}/{folder_name}/dataflows'
-                filename = f'{filepath}/{response.get("name", "")}.json'
-                os.makedirs(filepath, exist_ok=True)
+        with open(filename, mode='w', encoding='utf-8-sig') as f:
+            json.dump(response, f, ensure_ascii=True, indent=4)
 
-                with open(filename, mode='w', encoding='utf-8-sig') as f:
-                    json.dump(response, f, ensure_ascii=True, indent=4)
-                
-                return {'message': 'Success', 'content': response}
-
-            else:                
-                response = json.loads(r.content)
-                error_message = response['error']['message']
-
-                return {'message': {'error': error_message, 'content': response}}
+        return result
 
 
     def create_dataflow(
@@ -259,41 +272,21 @@ class Dataflow:
         Returns:
             Dict: status message and content.
         """
-        # Main URL
-        request_url = self.main_url + '/groups'
+        result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
 
-        # If workspace ID was not informed, return error message...
-        if workspace_id == '':
-            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if result.get('message') != 'Success':
+            return result
 
-        # If workspace ID was informed...
-        else:
-            request_url = f'{request_url}/{workspace_id}/dataflows/{dataflow_id}'
+        response = result['content']
+        response['pbi:mashup']['allowNativeQueries'] = False
 
-            # Make the request
-            r = requests.get(url=request_url, headers=self.headers)
+        # Save to json file
+        filename = f'{self.dataflows_dir}/prod backup/{dataflow_name}.json'
 
-            # Get HTTP status and content
-            status = r.status_code
-            response = json.loads(r.content)
-            response['pbi:mashup']['allowNativeQueries'] = False
+        with open(filename, mode='w', encoding='utf-8-sig') as f:
+            json.dump(response, f, ensure_ascii=True, indent=4)
 
-            # If success...
-            if status == 200:
-                # Save to json file
-                filename = f'{self.dataflows_dir}/prod backup/{dataflow_name}.json'
-
-                with open(filename, mode='w', encoding='utf-8-sig') as f:
-                    json.dump(response, f, ensure_ascii=True, indent=4)
-                
-                return {'message': 'Success', 'content': response}
-
-            else:                
-                # If any error happens, return message.
-                response = json.loads(r.content)
-                error_message = response['error']['message']
-
-                return {'message': {'error': error_message, 'content': response}}
+        return {'message': 'Success', 'content': response}
 
     def get_dataflow_gen2_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
         """
@@ -518,15 +511,15 @@ class Dataflow:
             })
 
         # Build computeEngineSettings
+        # Note: "Allow combining data from multiple sources" (pbi:mashup.fastCombine) is not
+        # part of the CI/CD definition format. It must be configured via the Fabric portal UI.
         if compute_engine_settings is not None:
             engine_settings = compute_engine_settings
         else:
+            engine_settings = {}
             fast_copy = gen2_content.get('ppdf:fastCopy', False)
-            if fast_copy:
-                # Fast copy enabled = Fabric default, empty settings is sufficient
-                engine_settings = {}
-            else:
-                engine_settings = {'allowFastCopy': False}
+            if not fast_copy:
+                engine_settings['allowFastCopy'] = False
 
         return {
             'formatVersion': '202502',
@@ -710,18 +703,12 @@ class Dataflow:
 
             # Standard Gen2 - fetch from PBI API and convert
             print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
-            request_url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}'
-            r = requests.get(url=request_url, headers=self.headers)
+            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
 
-            if r.status_code != 200:
-                try:
-                    response = json.loads(r.content)
-                    error_message = response['error']['message']
-                except Exception:
-                    error_message = r.text
-                return {'message': {'error': f'Failed to get dataflow definition: {error_message}', 'status_code': r.status_code}}
+            if pbi_result.get('message') != 'Success':
+                return pbi_result
 
-            pbi_content = json.loads(r.content)
+            pbi_content = pbi_result['content']
 
             # If display_name not provided, use original name with _cicd suffix
             if display_name == '':
