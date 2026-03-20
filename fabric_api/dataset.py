@@ -6,6 +6,7 @@ from . import workspace
 from . import report
 from typing import Dict
 from .utilities import create_directory
+from concurrent.futures import ThreadPoolExecutor
 
 
 class Dataset:
@@ -489,13 +490,17 @@ class Dataset:
                 reports_to_export.append(report_data)
 
         print(f'Downloading reports connected to {dataset_name}.\n\nWorkspace: {workspace_name}\nTotal reports: {len(reports_to_export)}\n')
-        for report_data in reports_to_export:
-            report.export_report(
+
+        def _export(report_data):
+            return report.export_report(
                 workspace_id=workspace_id,
                 workspace_name=workspace_name,
                 dataset_name=dataset_name,
                 report_id=report_data['id'],
                 report_name=report_data['name'],
                 replace_existing=replace_existing)
+
+        with ThreadPoolExecutor() as executor:
+            list(executor.map(_export, reports_to_export))
 
         return {'message': 'Success', 'content': dataset_reports_list['content']}

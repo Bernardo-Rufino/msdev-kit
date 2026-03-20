@@ -4,6 +4,7 @@ import pandas as pd
 from pandas.core.frame import DataFrame
 from typing import Dict, List
 from .utilities import create_directory
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class Workspace:
@@ -34,7 +35,7 @@ class Workspace:
             create_directory(dir)
 
 
-    def list_workspaces(
+    def list_workspaces_for_user(
                 self, 
                 workspace_id: str = '', 
                 workspace_name: str = '', 
@@ -96,12 +97,12 @@ class Workspace:
 
             if not df.empty and 'id' in df.columns and identifier != '':
                 # If identifier was informed, get the role of the app in the workspace
-                app_access_rights = []
+                app_access_rights = [''] * len(df['id'])
 
-                for index, workspace_id in enumerate(df['id']):
-                    role_url = f"{request_url}/{workspace_id}/users"
+                def _fetch_role(args):
+                    index, ws_id = args
+                    role_url = f"{request_url}/{ws_id}/users"
                     role_response = requests.get(url=role_url, headers=self.headers)
-
                     if role_response.status_code == 200:
                         users_data = role_response.json().get("value", [])
                         role = next(
@@ -115,9 +116,14 @@ class Workspace:
                         )
                     else:
                         role = ""
+                    return index, role
 
-                    app_access_rights.append(role)
-                    response[index]["workspaceRole"] = role
+                with ThreadPoolExecutor() as executor:
+                    futures = {executor.submit(_fetch_role, (i, ws_id)): i for i, ws_id in enumerate(df['id'])}
+                    for future in as_completed(futures):
+                        index, role = future.result()
+                        app_access_rights[index] = role
+                        response[index]["workspaceRole"] = role
 
                 df["workspaceRole"] = app_access_rights
 
@@ -477,16 +483,17 @@ class Workspace:
         if (user != '') & (workspaces_list != []):
 
 
-            for workspace in workspaces_list:
+            def _update_workspace(workspace):
                 id = workspace.get('id', '')
                 name = workspace.get('name', '')
                 response = self.update_user(user_principal_name=user, workspace_id=id, access_right='Admin')
-
-                # Try to update the user
                 try:
-                    responses.append((id, name, 'Error', response['message']['content']))
+                    return (id, name, 'Error', response['message']['content'])
                 except:
-                    responses.append((id, name, 'Success', ''))
+                    return (id, name, 'Success', '')
+
+            with ThreadPoolExecutor() as executor:
+                responses = list(executor.map(_update_workspace, workspaces_list))
 
             # Create a dataframe with responses
             df1 = pd.DataFrame(responses, columns=['id', 'name', 'status', 'error_message'])

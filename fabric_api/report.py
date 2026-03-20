@@ -7,6 +7,9 @@ from time import sleep
 from .operations import Operations
 from typing import Dict, List, Any
 from .utilities import create_directory
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from . import admin as admin_module
+from . import dataset as dataset_module
 
 
 class Report:
@@ -905,5 +908,105 @@ class Report:
                     lines.append(f'\t\t\tdisplayFolder: {display_folder}')
 
         return '\n'.join(lines) + '\n'
+
+
+    def rebind_report(
+                self,
+                workspace_id: str,
+                report_id: str,
+                new_dataset_id: str,
+                new_dataset_workspace_id: str,
+                admin: 'admin_module.Admin',
+                dataset: 'dataset_module.Dataset') -> Dict:
+        """
+        Rebinds a report to a new dataset/semantic model and migrates Read access.
+
+        Users with Read access to the report are automatically granted Read access
+        to the original dataset. Since rebinding does not carry that access over,
+        this method fetches those users via the Admin API and explicitly grants
+        them Read access on the new dataset after rebinding.
+
+        Args:
+            workspace_id (str): workspace id where the report lives.
+            report_id (str): report id to rebind.
+            new_dataset_id (str): id of the new dataset/semantic model.
+            new_dataset_workspace_id (str): workspace id where the new dataset lives.
+            admin (Admin): Admin instance (requires read-only admin API permission).
+            dataset (Dataset): Dataset instance used to grant access on the new dataset.
+
+        Returns:
+            Dict: status message and content with keys:
+                - rebind: result of the rebind operation.
+                - users_migrated: list of users granted access on the new dataset.
+                - users_failed: list of users where granting access failed.
+        """
+
+        if not workspace_id:
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if not report_id:
+            return {'message': 'Missing report id, please check.', 'content': ''}
+        if not new_dataset_id:
+            return {'message': 'Missing new dataset id, please check.', 'content': ''}
+        if not new_dataset_workspace_id:
+            return {'message': 'Missing new dataset workspace id, please check.', 'content': ''}
+
+        # Step 1 — get report users before rebinding (requires admin permission)
+        users_result = admin.get_report_users_as_admin(report_id)
+        if 'error' in str(users_result.get('message', '')):
+            return {'message': users_result['message'], 'content': ''}
+
+        report_users = users_result.get('content', [])
+
+        # Keep only users with explicit Read access
+        read_users = [u for u in report_users if u.get('reportUserAccessRight') == 'Read']
+
+        # Step 2 — rebind the report
+        request_url = f'{self.main_url}/groups/{workspace_id}/reports/{report_id}/Rebind'
+        r = requests.post(
+            url=request_url,
+            headers=self.headers,
+            json={'datasetId': new_dataset_id}
+        )
+
+        status = r.status_code
+
+        if status != 200:
+            response = json.loads(r.content)
+            error_message = response.get('error', {}).get('message', 'Unknown error')
+            return {'message': {'error': error_message}, 'content': response}
+
+        # Step 3 — grant Read access on the new dataset to migrated users (concurrent)
+        users_migrated = []
+        users_failed = []
+
+        def _grant_access(user):
+            identifier = user.get('identifier', '')
+            principal_type = user.get('principalType', 'User')
+            result = dataset.add_user(
+                user_principal_name=identifier,
+                workspace_id=new_dataset_workspace_id,
+                dataset_id=new_dataset_id,
+                access_right='Read',
+                user_type=principal_type
+            )
+            return identifier, result
+
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(_grant_access, user): user for user in read_users}
+            for future in as_completed(futures):
+                identifier, result = future.result()
+                if result.get('message') == 'Success':
+                    users_migrated.append(identifier)
+                else:
+                    users_failed.append({'identifier': identifier, 'error': result.get('message')})
+
+        return {
+            'message': 'Success',
+            'content': {
+                'rebind': f'Report {report_id} rebound to dataset {new_dataset_id}.',
+                'users_migrated': users_migrated,
+                'users_failed': users_failed
+            }
+        }
 
 
