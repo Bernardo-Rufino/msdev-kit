@@ -4,15 +4,86 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
-  build:
+  build-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Install build dependencies
-        run: pip install poetry-core build
+
+      - name: Install dependencies
+        run: |
+          pip install poetry-core build pytest
+          pip install -e .
+
       - name: Build package
         run: python -m build
+
+      - name: Run tests
+        id: tests
+        run: |
+          set +e
+          OUTPUT=$(pytest tests/ -v --tb=short 2>&1)
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          # Save output to file (handle multiline)
+          echo "$OUTPUT" > test_results.txt
+
+          # Also print to workflow log
+          echo "$OUTPUT"
+          exit 0
+
+      - name: Post results to PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('test_results.txt', 'utf8');
+            const exitCode = '${{ steps.tests.outputs.exit_code }}';
+            const status = exitCode === '0' ? '✅ All tests passed' : '❌ Some tests failed';
+
+            const body = `## ${status}
+
+            \`\`\`
+            ${output}
+            \`\`\`
+            `;
+
+            // Find and update existing bot comment, or create a new one
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes('All tests passed') || c.body.includes('Some tests failed')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }
+
+      - name: Fail if tests failed
+        if: steps.tests.outputs.exit_code != '0'
+        run: exit 1

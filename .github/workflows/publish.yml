@@ -14,8 +14,6 @@ jobs:
       version: ${{ steps.version.outputs.NEW_VERSION }}
     steps:
       - uses: actions/checkout@v5
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/setup-python@v6
         with:
@@ -24,7 +22,7 @@ jobs:
       - name: Install build dependencies
         run: pip install poetry-core build
 
-      - name: Auto-increment version if needed
+      - name: Determine version
         run: |
           # Get local version from pyproject.toml
           LOCAL_VERSION=$(python -c "
@@ -58,6 +56,12 @@ jobs:
           fi
 
           echo "Publishing version: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Set version in source files
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.NEW_VERSION }}"
 
           # Update pyproject.toml with the new version
           python -c "
@@ -74,19 +78,6 @@ jobs:
           text = re.sub(r'(__version__\s*=\s*\")([^\"]+)(\")', r'\g<1>${NEW_VERSION}\3', text)
           open('fabric_api/__init__.py', 'w').write(text)
           "
-
-          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-        id: version
-
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml fabric_api/__init__.py
-          git diff --staged --quiet && echo "No version changes to commit" || \
-            git commit -m "bump version to ${{ steps.version.outputs.NEW_VERSION }} [skip ci]"
-          git tag "v${{ steps.version.outputs.NEW_VERSION }}"
-          git push origin main --tags
 
       - name: Build package
         run: python -m build
