@@ -117,7 +117,7 @@ Manage datasets, permissions, and execute DAX queries.
 |---|---|
 | `list_datasets(workspace_id)` | List all datasets in a workspace. |
 | `get_dataset_details(workspace_id, dataset_id)` | Get details of a specific dataset. |
-| `execute_query(workspace_id, dataset_id, query)` | Execute a DAX query against a dataset. |
+| `execute_query(workspace_id, dataset_id, query)` | Execute a DAX query against a dataset. Runs a COUNTROWS pre-check to detect if API row/value limits would truncate the result and returns truncation metadata. |
 | `list_users(workspace_id, dataset_id)` | List users with access to a dataset. |
 | `add_user(user_principal_name, workspace_id, dataset_id, access_right)` | Grant a user access to a dataset. |
 | `update_user(user_principal_name, workspace_id, dataset_id, access_right)` | Update a user's access to a dataset. |
@@ -273,3 +273,10 @@ Query SQL databases (Lakehouse) via ODBC.
 
 - The Power BI REST API has a **200 requests per hour** rate limit.
 - Not all users can be updated via the API. See Microsoft docs: [Dataset permissions](https://learn.microsoft.com/en-us/power-bi/developer/embedded/datasets-permissions#get-and-update-dataset-permissions-with-apis).
+- **Dataset query limits** (executeQueries API):
+  - Max **100,000 rows** or **1,000,000 values** (rows × columns) per query, whichever is hit first.
+  - Max **15 MB** of data per query.
+  - **120 query requests per minute** per user.
+  - Only **DAX** queries are supported (no MDX, INFO functions, or DMV).
+  - Datasets hosted in Azure Analysis Services or with a live connection to on-premises AAS are not supported.
+  - Service Principals are not supported for datasets with RLS or SSO enabled.

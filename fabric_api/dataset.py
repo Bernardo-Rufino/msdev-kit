@@ -124,65 +124,130 @@ class Dataset:
                 return {'message': {'error': error_message, 'content': response}}
 
 
+    def _post_query(self, workspace_id: str, dataset_id: str, query: str) -> requests.Response:
+        """
+        Send a DAX query to the Power BI executeQueries API.
+
+        Args:
+            workspace_id (str): workspace id.
+            dataset_id (str): dataset id.
+            query (str): DAX query string.
+
+        Returns:
+            requests.Response: raw response from the API.
+        """
+        request_url = self.main_url + f'/groups/{workspace_id}/datasets/{dataset_id}/executeQueries'
+        headers = {'Authorization': f'Bearer {self.token}'}
+        data = {
+            "queries": [{"query": query}],
+            "serializerSettings": {"includeNulls": 'true'}
+        }
+        return requests.post(url=request_url, headers=headers, json=data)
+
+    @staticmethod
+    def _extract_table_expression(query: str) -> str:
+        """
+        Extract the table expression from a DAX EVALUATE query.
+
+        Args:
+            query (str): full DAX query starting with EVALUATE.
+
+        Returns:
+            str: the table expression after EVALUATE.
+        """
+        import re
+        match = re.search(r'\bEVALUATE\b\s+(.*)', query, re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return ''
+
     def execute_query(
-                self, 
-                workspace_id: str = '', 
+                self,
+                workspace_id: str = '',
                 dataset_id: str = '',
                 query: str = '',
                 impersonated_username: str = '') -> Dict:
         """
-        Grants an user access to a specific dataset.
+        Execute a DAX query against a dataset.
+
+        Before running the actual query, a COUNTROWS pre-check is performed to
+        detect whether the API row/value limits would truncate the result.
+
+        API limits:
+            - Max 100,000 rows per query.
+            - Max 1,000,000 values (rows x columns) per query.
+            - Max 15 MB of data per query.
+            - Whichever limit is hit first applies.
 
         Args:
-            user_principal_name (str): user e-mail or identifier of service principal.
-            workspace_id (str): workspace id to add the user to.
-            dataset_id (str): dataset id to grant access to.
-            query (str): .
+            workspace_id (str): workspace id.
+            dataset_id (str): dataset id.
+            query (str): DAX query (must start with EVALUATE).
+            impersonated_username (str, optional): effective username for RLS.
 
         Returns:
-            Dict: status message.
+            Dict: status message, content (parsed rows), and truncation metadata.
         """
 
-        # If both, user, workspace and dataset are provided...
-        if (query != '') & (workspace_id != '') & (dataset_id != ''):
+        if (query == '') or (workspace_id == '') or (dataset_id == ''):
+            return {'message': 'Missing parameters, please check.'}
 
-            request_url = self.main_url + f'/groups/{workspace_id}/datasets/{dataset_id}/executeQueries'
+        # --- Step 1: COUNTROWS pre-check ---
+        table_expression = self._extract_table_expression(query)
+        total_rows = None
 
-            headers = {'Authorization': f'Bearer {self.token}'}
+        if table_expression:
+            count_query = f'EVALUATE ROW("_count", COUNTROWS({table_expression}))'
+            count_response = self._post_query(workspace_id, dataset_id, count_query)
 
-            # Add user to dataset with the specified access right.
-            # https://learn.microsoft.com/en-us/rest/api/power-bi/datasets/post-dataset-user-in-group
-            data = {
-                "queries": [
-                    {
-                    "query": query
-                    }
-                ],
-                "serializerSettings": {
-                    "includeNulls": 'true'
-                }
+            if count_response.status_code == 200:
+                count_result = json.loads(count_response.content)
+                try:
+                    total_rows = count_result['results'][0]['tables'][0]['rows'][0]['[_count]']
+                except (KeyError, IndexError):
+                    total_rows = None
+
+        # --- Step 2: Execute the actual query ---
+        r = self._post_query(workspace_id, dataset_id, query)
+        status = r.status_code
+
+        if status == 200:
+            result = json.loads(r.content)
+
+            try:
+                rows = result['results'][0]['tables'][0]['rows']
+            except (KeyError, IndexError):
+                rows = []
+
+            # Determine column count from the first row
+            num_columns = len(rows[0]) if rows else 0
+            rows_returned = len(rows)
+
+            # Calculate the effective row limit based on the 1M values cap
+            if num_columns > 0:
+                max_rows = min(100_000, 1_000_000 // num_columns)
+            else:
+                max_rows = 100_000
+
+            # Determine if data was truncated
+            truncated = False
+            if total_rows is not None and total_rows > max_rows:
+                truncated = True
+            elif rows_returned >= max_rows:
+                truncated = True
+
+            return {
+                'message': 'Success',
+                'content': rows,
+                'total_rows': total_rows,
+                'rows_returned': rows_returned,
+                'num_columns': num_columns,
+                'max_rows_allowed': max_rows,
+                'truncated': truncated
             }
 
-            # Make the request
-            r = requests.post(url=request_url, headers=headers, json=data)
-
-            # Get HTTP status and content
-            status = r.status_code
-
-            # If success...
-            if status == 200:
-                return {'message': 'Success', 'content': r.content}
-            
-            else:                
-                # If any error happens, return message.
-                # response = json.loads(r.content)
-                # error_message = response['error']['details']['message']
-
-                # return {'message': {'error': error_message, 'content': response}}
-                
-                return {'message': 'Error', 'content': r.content}
         else:
-            return {'message': 'Missing parameters, please check.'}
+            return {'message': 'Error', 'content': r.content}
 
     
     def list_users(
