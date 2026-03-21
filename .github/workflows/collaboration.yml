@@ -9,7 +9,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -20,11 +20,25 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install poetry-core build pytest
+          pip install poetry-core build
           pip install -e .
 
       - name: Build package
         run: python -m build
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install pytest
+          pip install -e .
 
       - name: Run tests
         id: tests
@@ -34,10 +48,7 @@ jobs:
           EXIT_CODE=$?
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
-          # Save output to file (handle multiline)
           echo "$OUTPUT" > test_results.txt
-
-          # Also print to workflow log
           echo "$OUTPUT"
           exit 0
 
@@ -57,7 +68,6 @@ jobs:
             \`\`\`
             `;
 
-            // Find and update existing bot comment, or create a new one
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -65,7 +75,7 @@ jobs:
             });
 
             const botComment = comments.find(c =>
-              c.user.type === 'Bot' && c.body.includes('All tests passed') || c.body.includes('Some tests failed')
+              c.user.type === 'Bot' && (c.body.includes('All tests passed') || c.body.includes('Some tests failed'))
             );
 
             if (botComment) {

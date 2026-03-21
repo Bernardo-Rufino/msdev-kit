@@ -42,6 +42,8 @@ CICD_DATAFLOW_ID = '06563e9b-07db-4689-b491-80e46d8aea28'      # Gen2 CI/CD
 
 
 def load_fixture(path):
+    if not os.path.exists(path):
+        pytest.skip(f'Fixture file not found: {os.path.basename(path)}')
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
