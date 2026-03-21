@@ -9,4 +9,4 @@ from .operations import Operations
 from .kql import KQLDatabase
 from .database import Database
 
-__version__ = "1.0.7"
+__version__ = "1.1.0"
