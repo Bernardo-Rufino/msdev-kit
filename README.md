@@ -100,7 +100,7 @@ Manage Power BI workspaces, users, and permissions.
 
 | Method | Description |
 |---|---|
-| `list_workspaces(...)` | List all workspaces the user has access to, with optional filters. |
+| `list_workspaces_for_user(...)` | List all workspaces the user has access to, with optional filters. |
 | `get_workspace_details(workspace_id)` | Get details for a specific workspace. |
 | `list_users(workspace_id)` | List all users in a workspace. |
 | `list_reports(workspace_id)` | List all reports in a workspace. |
@@ -139,6 +139,7 @@ Retrieve report metadata, definitions, visuals, and report-level measures.
 | `get_legacy_report_json(workspace_id, report_id, operations)` | Get and decode the full report definition for PBIR-Legacy reports. |
 | `export_report(workspace_id, report_id, ...)` | Export a report as a `.pbix` file. |
 | `get_report_measures(workspace_id, report_id, operations)` | Extract report-level measures and generate a DAX Query View script. Supports both PBIR and PBIR-Legacy formats. |
+| `rebind_report(workspace_id, report_id, new_dataset_id, new_dataset_workspace_id, admin, dataset)` | Rebind a report to a new dataset/semantic model and migrate Read access to the new dataset. |
 
 ### Dataflow
 
@@ -154,6 +155,9 @@ Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 | `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2 CI/CD item. |
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
+| `change_data_destination(definition, destination_type, destination_workspace_id, destination_item_id)` | Change the data destination of a dataflow definition (Lakehouse ↔ Warehouse). Supports both standard and CI/CD formats. |
+| `create_dataflow_with_new_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Create a new Gen2 CI/CD dataflow from an existing one with a different data destination. |
+| `replace_dataflow_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Replace the data destination of an existing dataflow in-place. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. See details below. |
 
 #### `upgrade_to_gen2_cicd`
