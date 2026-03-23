@@ -147,7 +147,7 @@ Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 
 | Method | Description |
 |---|---|
-| `list_dataflows(workspace_id, type='pbi')` | List dataflows in a workspace. Use `type='fabric'` for Fabric API. |
+| `list_dataflows(workspace_id)` | List all dataflows in a workspace (Gen1, Gen2 standard, and Gen2 CI/CD). Results are merged and deduplicated with a `source` column. |
 | `get_dataflow_details(workspace_id, dataflow_id)` | Get details of a specific dataflow. |
 | `create_dataflow(workspace_id, dataflow_content)` | Create a new Power BI dataflow. |
 | `delete_dataflow(workspace_id, dataflow_id, type='pbi')` | Delete a dataflow. Use `type='fabric'` for Fabric API. |
@@ -155,9 +155,8 @@ Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 | `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2 CI/CD item. |
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
-| `change_data_destination(definition, destination_type, destination_workspace_id, destination_item_id)` | Change the data destination of a dataflow definition (Lakehouse ↔ Warehouse). Supports both standard and CI/CD formats. |
+| `change_data_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, update=False, ...)` | Fetch the dataflow definition and change its data destination (Lakehouse ↔ Warehouse). When `update=True`, saves the change back to Fabric in-place. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Create a new Gen2 CI/CD dataflow from an existing one with a different data destination. |
-| `replace_dataflow_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Replace the data destination of an existing dataflow in-place. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. See details below. |
 
 #### `upgrade_to_gen2_cicd`

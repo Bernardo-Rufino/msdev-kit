@@ -3,7 +3,6 @@ __pycache__
 dist/
 *.ipynb
 *.json
-!tests/*.json
 *.xlsx
 *.csv
 *.env

@@ -2,10 +2,11 @@ import os
 import re
 import copy
 import json
+import uuid
 import base64
 import requests
 import pandas as pd
-from typing import Dict
+from typing import Dict, List
 from .utilities import create_directory
 from .workspace import Workspace
 
@@ -62,60 +63,84 @@ class Dataflow:
             return {'message': {'error': error_message, 'status_code': r.status_code}}
 
 
-    def list_dataflows(self, workspace_id: str = '', type: str = 'pbi') -> Dict:
+    def list_dataflows(self, workspace_id: str = '') -> Dict:
         """
-        List all dataflows in a workspace_id that the user has access to.
+        List all dataflows in a workspace, including Gen1, Gen2 (standard), and Gen2 CI/CD (Fabric native).
+
+        Fetches from both the Power BI REST API (Gen1 and Gen2 standard) and the Fabric API
+        (Gen2 CI/CD). Results are merged and deduplicated by dataflow ID, with a 'source' column
+        indicating the origin ('pbi', 'fabric', or 'both').
 
         Args:
-            workspace_id (str, optional): workspace id to search for.
+            workspace_id (str): The workspace ID to list dataflows from.
 
         Returns:
-            Dict: status message and content.
+            Dict: status message and content (list of dataflow records).
         """
-        # If workspace ID was not informed, return error message...
         if workspace_id == '':
             return {'message': 'Missing workspace id, please check.', 'content': ''}
-        
-        if type not in ('pbi', 'fabric'):
-            return {'message': 'Type must be "pbi" or "fabric".', 'content': ''}
-        
-        # Main URL
-        elif type == 'pbi':
-            request_url = f'{self.main_url}/groups/{workspace_id}/dataflows'
-        elif type == 'fabric':
-            request_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows'
-        else:
-            return {'message': 'Type must be "pbi" or "fabric".', 'content': ''} # Just as fallback, it won't reach here.
 
         workspace_name = self.workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
         filename = f'dataflows_{workspace_name}.xlsx'
 
-        # Make the request
-        r = requests.get(url=request_url, headers=self.headers)
+        # Fetch from PBI API (Gen1 + Gen2 standard)
+        pbi_url = f'{self.main_url}/groups/{workspace_id}/dataflows'
+        pbi_response = requests.get(url=pbi_url, headers=self.headers)
 
-        # Get HTTP status and content
-        status = r.status_code
-        response = json.loads(r.content).get('value', '')
+        pbi_records = []
+        if pbi_response.status_code == 200:
+            pbi_data = json.loads(pbi_response.content).get('value', [])
+            pbi_df = pd.DataFrame(pbi_data)
+            if not pbi_df.empty:
+                pbi_df['source'] = 'pbi'
+                # Normalize ID column name
+                if 'objectId' in pbi_df.columns:
+                    pbi_df = pbi_df.rename(columns={'objectId': 'id'})
+                pbi_records = pbi_df.to_dict('records')
 
-        # If success...
-        if status == 200:
-            if type == 'fabric':
-                df = pd.json_normalize(response)
-                df['name'] = df['displayName']
-                df.drop(columns=['displayName'], inplace=True)
-            else:
-                df = pd.DataFrame(response)
-            df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
-            result = json.loads(df.to_json(orient='records'))
+        # Fetch from Fabric API (Gen2 CI/CD)
+        fabric_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows'
+        fabric_response = requests.get(url=fabric_url, headers=self.headers)
 
-            return {'message': 'Success', 'content': result}
+        fabric_records = []
+        if fabric_response.status_code == 200:
+            fabric_data = json.loads(fabric_response.content).get('value', [])
+            fabric_df = pd.json_normalize(fabric_data)
+            if not fabric_df.empty:
+                fabric_df['name'] = fabric_df['displayName']
+                fabric_df.drop(columns=['displayName'], inplace=True)
+                fabric_df['source'] = 'fabric'
+                fabric_records = fabric_df.to_dict('records')
 
-        else:                
-            # If any error happens, return message.
-            response = json.loads(r.content)
-            error_message = response['error']['message']
+        # Check if both APIs failed
+        if pbi_response.status_code != 200 and fabric_response.status_code != 200:
+            try:
+                error_message = json.loads(pbi_response.content)['error']['message']
+            except Exception:
+                error_message = pbi_response.text
+            return {'message': {'error': error_message, 'content': ''}}
 
-            return {'message': {'error': error_message, 'content': response}}
+        # Merge and deduplicate by ID
+        pbi_ids = {r['id'] for r in pbi_records if 'id' in r}
+        fabric_ids = {r['id'] for r in fabric_records if 'id' in r}
+        both_ids = pbi_ids & fabric_ids
+
+        merged = []
+        for r in pbi_records:
+            if r.get('id') in both_ids:
+                r['source'] = 'both'
+            merged.append(r)
+        for r in fabric_records:
+            if r.get('id') not in pbi_ids:
+                merged.append(r)
+
+        df = pd.json_normalize(merged)
+        if 'name' in df.columns:
+            df = df.sort_values(by='name', key=lambda s: s.str.lower()).reset_index(drop=True)
+        df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
+        result = json.loads(df.to_json(orient='records'))
+
+        return {'message': 'Success', 'content': result}
             
 
     def get_dataflow_details(self, workspace_id: str = '', dataflow_id: str = '', folder_name: str = '') -> Dict:
@@ -484,40 +509,169 @@ class Dataflow:
         return updated
 
 
-    def change_data_destination(self, definition: Dict, destination_type: str,
-                                destination_workspace_id: str, destination_item_id: str) -> Dict:
+    def _get_lakehouse_table_columns(self, workspace_id: str, lakehouse_id: str, table_name: str) -> List[str]:
         """
-        Changes the data destination of a dataflow definition, keeping everything else as-is.
-
-        Rewrites all _DataDestination queries to point to a new destination type
-        (e.g., switch from Lakehouse to Warehouse or vice versa).
-        Only queries with an existing data destination (_DataDestination suffix) are affected.
-        Auto-detects whether the definition is standard (PBI API) or CI/CD (Fabric API) format.
-
-        For standard format (PBI API response), modifies:
-        - pbi:mashup.document: Rewrites _DataDestination queries.
-        - pbi:mashup.connectionOverrides: Updates Lakehouse/Warehouse connections.
-        - pbi:mashup.trustedConnections: Updates Lakehouse/Warehouse connections.
-
-        For CI/CD format (Fabric API definition), modifies:
-        - mashup.pq: Rewrites _DataDestination queries.
-        - queryMetadata.json: Updates connections.
-
-        Note: The [DataDestinations] annotation settings (Automatic vs Manual mapping) in CI/CD
-        format are preserved as-is. If switching to a Warehouse destination requires Manual column
-        mappings, adjust the annotation in the mashup.pq accordingly.
+        Fetch column names for a table in a Fabric Lakehouse via REST API.
 
         Args:
-            definition: The dataflow definition dict. Either:
-                - Standard format: Full PBI API response from _get_dataflow_pbi_definition.
-                - CI/CD format: Fabric API definition from get_dataflow_gen2_definition.
+            workspace_id: Workspace ID where the Lakehouse resides.
+            lakehouse_id: Lakehouse ID.
+            table_name: Name of the table.
+
+        Returns:
+            List of column names, or empty list if the table is not found.
+        """
+        url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/lakehouses/{lakehouse_id}/tables'
+        r = requests.get(url=url, headers=self.headers)
+
+        if r.status_code == 200:
+            response = r.json()
+            tables = response.get('data', response.get('value', []))
+            for table in tables:
+                if table.get('name') == table_name:
+                    return [col['name'] for col in table.get('columns', [])]
+        return []
+
+
+    def _parse_cicd_mashup(self, m_code: str) -> Dict:
+        """
+        Parse CI/CD mashup.pq into structured components.
+
+        Returns:
+            Dict with: header, section, data_queries, source_queries, dest_queries.
+            Each query is a dict with: name, body, annotation.
+            Returns None if the M code cannot be parsed.
+        """
+        # Extract header and section line
+        section_match = re.search(r'(section\s+\w+;)\r?\n', m_code)
+        if not section_match:
+            return None
+
+        header_line = m_code[:section_match.start()].strip()
+        section_line = section_match.group(1)
+        queries_text = m_code[section_match.end():]
+
+        # Match query blocks: optional annotation line + shared query_name = let ... in ... ;
+        block_pattern = r'(\[[^\n]*\]\r?\n)?(shared\s+(\w+)\s*=\s*let\b[\s\S]*?;\r?\n?)'
+        matches = list(re.finditer(block_pattern, queries_text))
+
+        data_queries = []
+        source_queries = []
+        dest_queries = []
+
+        for match in matches:
+            annotation = match.group(1) or ''
+            full_query = match.group(2)
+            query_name = match.group(3)
+
+            if query_name == 'DefaultDestination' or query_name.endswith('_DataDestination'):
+                dest_queries.append({'name': query_name, 'body': full_query, 'annotation': annotation})
+            elif 'BindToDefaultDestination' in annotation or 'DataDestinations' in annotation:
+                data_queries.append({'name': query_name, 'body': full_query, 'annotation': annotation})
+            else:
+                source_queries.append({'name': query_name, 'body': full_query, 'annotation': annotation})
+
+        return {
+            'header': header_line,
+            'section': section_line,
+            'data_queries': data_queries,
+            'source_queries': source_queries,
+            'dest_queries': dest_queries
+        }
+
+
+    def _extract_current_destination_info(self, dest_queries: list) -> Dict:
+        """
+        Extract current destination type and IDs from destination queries.
+
+        Returns:
+            Dict with: type ('lakehouse', 'warehouse', or 'unknown'), workspace_id, item_id.
+        """
+        for dq in dest_queries:
+            body = dq['body']
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+
+            if 'Lakehouse.Contents' in body:
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+                return {
+                    'type': 'lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else ''
+                }
+            elif 'Fabric.Warehouse' in body:
+                wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
+                dn_match = re.search(r'displayName\s*=\s*"([^"]+)"', body)
+                return {
+                    'type': 'warehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': wh_match.group(1) if wh_match else (dn_match.group(1) if dn_match else '')
+                }
+
+        return {'type': 'unknown', 'workspace_id': '', 'item_id': ''}
+
+
+    def _build_warehouse_annotation(self, query_name: str, columns: List[str]) -> str:
+        """Build the [DataDestinations = {...}] M annotation for a warehouse destination with manual column mappings."""
+        mappings = ', '.join(
+            f'[SourceColumnName = "{col}", DestinationColumnName = "{col}"]'
+            for col in columns
+        )
+        return (
+            f'[DataDestinations = {{[Definition = [Kind = "Reference", '
+            f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
+            f'Settings = [Kind = "Manual", AllowCreation = true, '
+            f'ColumnSettings = [Mappings = {{{mappings}}}], '
+            f'DynamicSchema = false, UpdateMethod = [Kind = "Replace"], '
+            f'TypeSettings = [Kind = "Table"]]]}}]'
+        )
+
+
+    def _build_warehouse_dest_query(self, query_name: str, destination_workspace_id: str,
+                                     destination_item_id: str) -> str:
+        """Build a shared X_DataDestination M query for Warehouse destination."""
+        return (
+            f'shared {query_name}_DataDestination = let\r\n'
+            f'  Pattern = Fabric.Warehouse([CreateNavigationProperties = false, HierarchicalNavigation = null]),\r\n'
+            f'  Navigation_1 = Pattern{{[workspaceId = "{destination_workspace_id}"]}}[Data],\r\n'
+            f'  Navigation_2 = Navigation_1{{[warehouseId = "{destination_item_id}"]}}[Data],\r\n'
+            f'  TableNavigation = Navigation_2{{[Item = "{query_name}", Schema = "dbo"]}}?[Data]?\r\n'
+            f'in\r\n'
+            f'  TableNavigation;\r\n'
+        )
+
+
+    def _build_lakehouse_default_dest(self, destination_workspace_id: str,
+                                       destination_item_id: str) -> str:
+        """Build the shared DefaultDestination M query for Lakehouse destination."""
+        return (
+            f'shared DefaultDestination = let\r\n'
+            f'  Source = Lakehouse.Contents([CreateNavigationProperties = false, EnableFolding = false]),\r\n'
+            f'  #"Navigation 1" = Source{{[workspaceId = "{destination_workspace_id}"]}}[Data],\r\n'
+            f'  #"Navigation 2" = #"Navigation 1"{{[lakehouseId = "{destination_item_id}"]}}[Data]\r\n'
+            f'in\r\n'
+            f'  #"Navigation 2";\r\n'
+        )
+
+
+    def _change_data_destination(self, definition: Dict, destination_type: str,
+                                 destination_workspace_id: str, destination_item_id: str) -> Dict:
+        """
+        Internal method that changes the data destination of a dataflow definition dict.
+
+        Handles both CI/CD (Fabric API) and standard (PBI API) formats.
+        For CI/CD format, supports both DefaultDestination and per-query _DataDestination patterns.
+
+        When target is Lakehouse: outputs DefaultDestination pattern (automatic mapping).
+        When target is Warehouse: outputs per-query _DataDestination pattern (manual column mappings).
+
+        Args:
+            definition: The dataflow definition dict (standard or CI/CD format).
             destination_type: Target destination type - 'Lakehouse' or 'Warehouse'.
             destination_workspace_id: Workspace ID where the target Lakehouse/Warehouse resides.
             destination_item_id: The ID of the target Lakehouse or Warehouse.
 
         Returns:
             Dict: A deep copy of the definition with updated data destinations.
-                Returns error dict if format is unrecognized or no mashup document is found.
         """
         if destination_type.lower() not in ('lakehouse', 'warehouse'):
             return {'message': 'destination_type must be "Lakehouse" or "Warehouse".', 'content': ''}
@@ -529,56 +683,397 @@ class Dataflow:
         if not is_cicd and not is_standard:
             return {'message': 'Unrecognized definition format. Expected standard (PBI API) or CI/CD (Fabric API) format.', 'content': ''}
 
-        result = copy.deepcopy(definition)
-
         if is_standard:
-            mashup = result.get('pbi:mashup', {})
-            document = mashup.get('document', '')
-
-            if not document:
-                return {'message': 'No mashup document found in definition.', 'content': ''}
-
-            # Rewrite _DataDestination queries in M code
-            mashup['document'] = self._rewrite_data_destination_queries(
-                document, destination_type, destination_workspace_id, destination_item_id
+            return self._change_standard_data_destination(
+                definition, destination_type, destination_workspace_id, destination_item_id
+            )
+        else:
+            return self._change_cicd_data_destination(
+                definition, destination_type, destination_workspace_id, destination_item_id
             )
 
-            # Update connections
-            if 'connectionOverrides' in mashup:
-                mashup['connectionOverrides'] = self._update_destination_connections(
-                    mashup['connectionOverrides'], destination_type
+
+    def _change_standard_data_destination(self, definition: Dict, destination_type: str,
+                                           destination_workspace_id: str, destination_item_id: str) -> Dict:
+        """Handle data destination change for standard (PBI API) format definitions."""
+        m_code = definition.get('pbi:mashup', {}).get('document', '')
+
+        # Check if already set to target
+        if m_code:
+            current_type, current_item_id = self._detect_current_dest_from_mcode(m_code)
+            if current_type == destination_type.lower() and current_item_id == destination_item_id:
+                return {'message': f'Data destination is already set to {destination_type} with item ID {destination_item_id}. No changes needed.', 'content': definition}
+
+        result = copy.deepcopy(definition)
+        mashup = result.get('pbi:mashup', {})
+        document = mashup.get('document', '')
+
+        if not document:
+            return {'message': 'No mashup document found in definition.', 'content': ''}
+
+        mashup['document'] = self._rewrite_data_destination_queries(
+            document, destination_type, destination_workspace_id, destination_item_id
+        )
+        if 'connectionOverrides' in mashup:
+            mashup['connectionOverrides'] = self._update_destination_connections(
+                mashup['connectionOverrides'], destination_type
+            )
+        if 'trustedConnections' in mashup:
+            mashup['trustedConnections'] = self._update_destination_connections(
+                mashup['trustedConnections'], destination_type
+            )
+        return result
+
+
+    def _detect_current_dest_from_mcode(self, m_code: str):
+        """Detect current destination type and item ID from M code. Returns (type, item_id)."""
+        if re.search(r'Fabric\.Warehouse\(', m_code):
+            id_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', m_code)
+            return 'warehouse', id_match.group(1) if id_match else None
+        elif re.search(r'Lakehouse\.Contents\(', m_code):
+            id_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', m_code)
+            return 'lakehouse', id_match.group(1) if id_match else None
+        return None, None
+
+
+    def _change_cicd_data_destination(self, definition: Dict, destination_type: str,
+                                       destination_workspace_id: str, destination_item_id: str) -> Dict:
+        """
+        Handle data destination change for CI/CD (Fabric API) format definitions.
+
+        Supports both DefaultDestination and per-query _DataDestination input patterns.
+        Outputs DefaultDestination for Lakehouse, per-query _DataDestination for Warehouse.
+        """
+        result = copy.deepcopy(definition)
+        parts = result['definition']['parts']
+
+        # Extract mashup.pq and queryMetadata.json
+        m_code = ''
+        metadata = {}
+        for part in parts:
+            if part['path'] == 'mashup.pq':
+                m_code = base64.b64decode(part['payload']).decode('utf-8')
+            elif part['path'] == 'queryMetadata.json':
+                metadata = json.loads(base64.b64decode(part['payload']).decode('utf-8'))
+
+        if not m_code:
+            return {'message': 'No mashup.pq found in definition.', 'content': ''}
+
+        # Parse the M code into components
+        parsed = self._parse_cicd_mashup(m_code)
+        if not parsed:
+            return {'message': 'Could not parse mashup.pq.', 'content': ''}
+
+        data_queries = parsed['data_queries']
+        source_queries = parsed['source_queries']
+        dest_queries = parsed['dest_queries']
+
+        if not data_queries:
+            return {'message': 'No data queries with destinations found in mashup.pq.', 'content': ''}
+
+        # Get current destination info and check if already the same
+        current_dest = self._extract_current_destination_info(dest_queries)
+        if current_dest['type'] == destination_type.lower() and current_dest['item_id'] == destination_item_id:
+            return {
+                'message': f'Data destination is already set to {destination_type} with item ID {destination_item_id}. No changes needed.',
+                'content': definition
+            }
+
+        # Extract staging definition from current header
+        staging_match = re.search(r'StagingDefinition\s*=\s*\[[^\]]*\]', parsed['header'])
+        staging_def = staging_match.group(0) if staging_match else 'StagingDefinition = [Kind = "FastCopy"]'
+
+        # Build new M code and update queryMetadata based on target type
+        if destination_type.lower() == 'warehouse':
+            new_m_code, metadata = self._build_warehouse_cicd(
+                parsed, metadata, staging_def, current_dest,
+                destination_workspace_id, destination_item_id
+            )
+        else:
+            new_m_code, metadata = self._build_lakehouse_cicd(
+                parsed, metadata, staging_def,
+                destination_workspace_id, destination_item_id
+            )
+
+        # Encode and update parts
+        for part in parts:
+            if part['path'] == 'mashup.pq':
+                part['payload'] = base64.b64encode(new_m_code.encode('utf-8')).decode('utf-8')
+            elif part['path'] == 'queryMetadata.json':
+                part['payload'] = base64.b64encode(
+                    json.dumps(metadata, indent=2).encode('utf-8')
+                ).decode('utf-8')
+
+        return result
+
+
+    def _build_warehouse_cicd(self, parsed: Dict, metadata: Dict, staging_def: str,
+                               current_dest: Dict, destination_workspace_id: str,
+                               destination_item_id: str):
+        """
+        Build warehouse CI/CD mashup.pq and update queryMetadata for warehouse destination.
+
+        Returns:
+            Tuple of (new_m_code, updated_metadata).
+        """
+        data_queries = parsed['data_queries']
+        source_queries = parsed['source_queries']
+
+        # Get column names for each data query table
+        columns_per_query = {}
+        if current_dest['type'] == 'lakehouse' and current_dest['workspace_id'] and current_dest['item_id']:
+            print("Fetching table columns from current Lakehouse destination...")
+            for q in data_queries:
+                columns = self._get_lakehouse_table_columns(
+                    current_dest['workspace_id'], current_dest['item_id'], q['name']
                 )
-            if 'trustedConnections' in mashup:
-                mashup['trustedConnections'] = self._update_destination_connections(
-                    mashup['trustedConnections'], destination_type
-                )
+                if columns:
+                    columns_per_query[q['name']] = columns
+                else:
+                    print(f"  Warning: Could not fetch columns for table '{q['name']}'. Skipping column mappings.")
+        elif current_dest['type'] == 'warehouse':
+            # Extract column mappings from existing DataDestinations annotations
+            for q in data_queries:
+                cols = re.findall(r'SourceColumnName\s*=\s*"([^"]+)"', q['annotation'])
+                if cols:
+                    columns_per_query[q['name']] = cols
 
-            return result
+        # Build header (no DefaultOutputDestinationSettings for warehouse)
+        new_header = f'[{staging_def}]'
 
-        elif is_cicd:
-            parts = result['definition']['parts']
+        # Build M code
+        new_m_code = new_header + '\r\n'
+        new_m_code += parsed['section'] + '\r\n'
 
-            for part in parts:
-                payload = base64.b64decode(part['payload']).decode('utf-8')
+        # Data queries with DataDestinations annotations
+        for q in data_queries:
+            columns = columns_per_query.get(q['name'], [])
+            if columns:
+                annotation = self._build_warehouse_annotation(q['name'], columns)
+                new_m_code += annotation + '\r\n'
+            new_m_code += q['body']
+            if not q['body'].endswith('\n'):
+                new_m_code += '\r\n'
 
-                if part['path'] == 'mashup.pq':
-                    # Rewrite _DataDestination queries in mashup.pq
-                    payload = self._rewrite_data_destination_queries(
-                        payload, destination_type, destination_workspace_id, destination_item_id
-                    )
-                    part['payload'] = base64.b64encode(payload.encode('utf-8')).decode('utf-8')
+        # Source queries (preserve as-is)
+        for q in source_queries:
+            if q['annotation']:
+                new_m_code += q['annotation']
+            new_m_code += q['body']
+            if not q['body'].endswith('\n'):
+                new_m_code += '\r\n'
 
-                elif part['path'] == 'queryMetadata.json':
-                    # Update connections in queryMetadata.json
-                    metadata = json.loads(payload)
-                    if 'connections' in metadata:
-                        metadata['connections'] = self._update_destination_connections(
-                            metadata['connections'], destination_type
-                        )
-                    payload = json.dumps(metadata, indent=2)
-                    part['payload'] = base64.b64encode(payload.encode('utf-8')).decode('utf-8')
+        # _DataDestination queries for each data query
+        for q in data_queries:
+            new_m_code += self._build_warehouse_dest_query(
+                q['name'], destination_workspace_id, destination_item_id
+            )
 
-            return result
+        # Update queryMetadata
+        queries_meta = metadata.get('queriesMetadata', {})
+
+        # Remove DefaultDestination entry if present
+        queries_meta.pop('DefaultDestination', None)
+
+        # Remove loadEnabled from data queries (warehouse doesn't use it)
+        for q in data_queries:
+            if q['name'] in queries_meta:
+                queries_meta[q['name']].pop('loadEnabled', None)
+
+        # Add _DataDestination entries for each data query
+        for q in data_queries:
+            dest_name = f"{q['name']}_DataDestination"
+            if dest_name not in queries_meta:
+                queries_meta[dest_name] = {
+                    'queryId': str(uuid.uuid4()),
+                    'queryName': dest_name,
+                    'isHidden': True,
+                    'loadEnabled': False
+                }
+
+        # Update connections: ensure Warehouse connection exists
+        connections = metadata.get('connections', [])
+        has_warehouse = any(c.get('kind') == 'Warehouse' for c in connections)
+        if not has_warehouse:
+            connections.append({'path': 'Warehouse', 'kind': 'Warehouse'})
+        # Remove Lakehouse connection if switching from Lakehouse
+        connections = [c for c in connections if c.get('kind') != 'Lakehouse']
+        metadata['connections'] = connections
+        metadata['queriesMetadata'] = queries_meta
+
+        return new_m_code, metadata
+
+
+    def _build_lakehouse_cicd(self, parsed: Dict, metadata: Dict, staging_def: str,
+                               destination_workspace_id: str, destination_item_id: str):
+        """
+        Build lakehouse CI/CD mashup.pq and update queryMetadata for lakehouse destination.
+
+        Returns:
+            Tuple of (new_m_code, updated_metadata).
+        """
+        data_queries = parsed['data_queries']
+        source_queries = parsed['source_queries']
+
+        # Build header with DefaultOutputDestinationSettings
+        new_header = (
+            f'[DefaultOutputDestinationSettings = [DestinationDefinition = '
+            f'[Kind = "Reference", QueryName = "DefaultDestination", IsNewTarget = true], '
+            f'UpdateMethod = [Kind = "Replace"], DestinationTypeSettings = [Kind = "Table"]], '
+            f'{staging_def}]'
+        )
+
+        # Build M code
+        new_m_code = new_header + '\r\n'
+        new_m_code += parsed['section'] + '\r\n'
+
+        # Data queries with BindToDefaultDestination
+        for q in data_queries:
+            new_m_code += '[BindToDefaultDestination = true]\r\n'
+            new_m_code += q['body']
+            if not q['body'].endswith('\n'):
+                new_m_code += '\r\n'
+
+        # Source queries (preserve as-is)
+        for q in source_queries:
+            if q['annotation']:
+                new_m_code += q['annotation']
+            new_m_code += q['body']
+            if not q['body'].endswith('\n'):
+                new_m_code += '\r\n'
+
+        # DefaultDestination query
+        new_m_code += self._build_lakehouse_default_dest(
+            destination_workspace_id, destination_item_id
+        )
+
+        # Update queryMetadata
+        queries_meta = metadata.get('queriesMetadata', {})
+
+        # Remove _DataDestination entries
+        dest_names = [f"{q['name']}_DataDestination" for q in data_queries]
+        for name in dest_names:
+            queries_meta.pop(name, None)
+
+        # Set data queries loadEnabled to false
+        for q in data_queries:
+            if q['name'] in queries_meta:
+                queries_meta[q['name']]['loadEnabled'] = False
+
+        # Add DefaultDestination entry
+        if 'DefaultDestination' not in queries_meta:
+            queries_meta['DefaultDestination'] = {
+                'queryId': str(uuid.uuid4()),
+                'queryName': 'DefaultDestination',
+                'isHidden': True,
+                'loadEnabled': False
+            }
+
+        # Update connections: ensure Lakehouse connection, remove Warehouse
+        connections = metadata.get('connections', [])
+        connections = [c for c in connections if c.get('kind') != 'Warehouse']
+        has_lakehouse = any(c.get('kind') == 'Lakehouse' for c in connections)
+        if not has_lakehouse:
+            connections.append({'path': 'Lakehouse', 'kind': 'Lakehouse'})
+        metadata['connections'] = connections
+        metadata['queriesMetadata'] = queries_meta
+
+        return new_m_code, metadata
+
+
+    def change_data_destination(self, workspace_id: str, dataflow_id: str, destination_type: str,
+                                destination_workspace_id: str, destination_item_id: str,
+                                update: bool = False, compute_engine_settings: Dict = None) -> Dict:
+        """
+        Changes the data destination of a dataflow, keeping everything else as-is.
+
+        Fetches the dataflow definition automatically (trying CI/CD format first, then standard),
+        then rewrites all _DataDestination queries to point to a new destination type
+        (e.g., switch from Lakehouse to Warehouse or vice versa).
+        Only queries with an existing data destination (_DataDestination suffix) are affected.
+
+        When update=True, saves the modified definition back to Fabric:
+        - CI/CD Gen2: Updates the existing dataflow definition in-place via Fabric API.
+        - Standard Gen2: Creates a new CI/CD dataflow with the same name and deletes
+          the original standard dataflow. The new dataflow will have a different ID.
+
+        Args:
+            workspace_id: The workspace ID where the dataflow resides.
+            dataflow_id: The dataflow ID.
+            destination_type: Target destination type - 'Lakehouse' or 'Warehouse'.
+            destination_workspace_id: Workspace ID where the target Lakehouse/Warehouse resides.
+            destination_item_id: The ID of the target Lakehouse or Warehouse.
+            update: If True, saves the modified definition back to Fabric. Defaults to False.
+            compute_engine_settings: Compute engine settings for the CI/CD dataflow.
+                Only used when update=True and converting from standard to CI/CD format.
+
+        Returns:
+            Dict: When update=False, a deep copy of the definition with updated data destinations.
+                When update=True, the API response from updating/creating the dataflow.
+                Returns error dict if the definition cannot be fetched or format is unrecognized.
+        """
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if dataflow_id == '':
+            return {'message': 'Missing dataflow id, please check.', 'content': ''}
+        if destination_type.lower() not in ('lakehouse', 'warehouse'):
+            return {'message': 'destination_type must be "Lakehouse" or "Warehouse".', 'content': ''}
+
+        # Try CI/CD format first (Fabric API)
+        print(f"Checking if dataflow {dataflow_id} is Gen2 CI/CD...")
+        cicd_result = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
+        is_cicd = cicd_result.get('message') == 'Success'
+
+        if is_cicd:
+            definition = cicd_result['content']
+        else:
+            # Fall back to standard format (PBI API)
+            print("Dataflow is standard Gen2. Fetching definition via PBI API...")
+            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
+            if pbi_result.get('message') == 'Success':
+                definition = pbi_result['content']
+            else:
+                return {'message': f'Failed to fetch dataflow definition. CI/CD: {cicd_result.get("message")}. PBI: {pbi_result.get("message")}', 'content': ''}
+
+        # Change data destination
+        print(f"Changing data destination to {destination_type}...")
+        modified = self._change_data_destination(definition, destination_type, destination_workspace_id, destination_item_id)
+
+        if not update:
+            return modified
+
+        # Save back to Fabric
+        if is_cicd:
+            # Extract display name from .platform
+            display_name = 'dataflow'
+            for part in modified.get('definition', {}).get('parts', []):
+                if part['path'] == '.platform':
+                    platform = json.loads(base64.b64decode(part['payload']).decode('utf-8'))
+                    display_name = platform.get('metadata', {}).get('displayName', 'dataflow')
+                    break
+
+            print(f"Updating Dataflow Gen2 CI/CD '{display_name}' (ID: {dataflow_id}) in-place...")
+            return self.update_dataflow_gen2_from_definition(
+                workspace_id, dataflow_id, display_name, modified
+            )
+        else:
+            # Standard Gen2 — convert to CI/CD, delete original, create new
+            display_name = definition.get('name', 'dataflow')
+
+            print("Converting to CI/CD format...")
+            cicd_definition = self._convert_gen2_to_cicd_definition(modified, display_name, compute_engine_settings)
+
+            if cicd_definition is None:
+                return {'message': {'error': 'Could not extract mashup document from dataflow.', 'content': ''}}
+
+            print(f"Deleting original standard dataflow '{display_name}' (ID: {dataflow_id})...")
+            delete_result = self.delete_dataflow(workspace_id, dataflow_id, type='pbi')
+            if delete_result.get('message') != 'Success':
+                print(f"Warning: Could not delete original dataflow: {delete_result}")
+                return {'message': {'error': f'Failed to delete original dataflow before recreating: {delete_result}', 'content': ''}}
+
+            print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {workspace_id}...")
+            return self.create_dataflow_gen2_from_definition(workspace_id, display_name, cicd_definition)
 
 
     def create_dataflow_with_new_destination(
@@ -644,7 +1139,7 @@ class Dataflow:
 
             # Change data destination
             print(f"Changing data destination to {destination_type}...")
-            modified = self.change_data_destination(
+            modified = self._change_data_destination(
                 cicd_content, destination_type, destination_workspace_id, destination_item_id
             )
 
@@ -675,9 +1170,10 @@ class Dataflow:
 
         # Change data destination on the standard definition
         print(f"Changing data destination to {destination_type}...")
-        modified = self.change_data_destination(
+        modified = self._change_data_destination(
             pbi_content, destination_type, destination_workspace_id, destination_item_id
         )
+
 
         # Convert to CI/CD format
         print("Converting to CI/CD format...")
@@ -688,107 +1184,6 @@ class Dataflow:
 
         print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {create_workspace_id}...")
         return self.create_dataflow_gen2_from_definition(create_workspace_id, display_name, definition)
-
-
-    def replace_dataflow_destination(
-                self,
-                workspace_id: str,
-                dataflow_id: str,
-                destination_type: str,
-                destination_workspace_id: str,
-                destination_item_id: str,
-                compute_engine_settings: Dict = None) -> Dict:
-        """
-        Replaces the data destination of an existing Dataflow Gen2 in-place.
-
-        Auto-detects whether the source is standard (PBI API) or CI/CD (Fabric API):
-        - CI/CD Gen2: Updates the existing dataflow definition in-place via Fabric API (POST updateDefinition).
-        - Standard Gen2: Creates a new CI/CD dataflow with the same name and deletes
-          the original standard dataflow. The new dataflow will have a different ID.
-
-        Only queries with an existing data destination are affected.
-        The dataflow name, queries, and all other settings are preserved.
-
-        Args:
-            workspace_id (str): Workspace ID where the dataflow resides.
-            dataflow_id (str): ID of the dataflow to update.
-            destination_type (str): Target destination type - 'Lakehouse' or 'Warehouse'.
-            destination_workspace_id (str): Workspace ID where the target Lakehouse/Warehouse resides.
-            destination_item_id (str): The ID of the target Lakehouse or Warehouse.
-            compute_engine_settings (Dict, optional): Compute engine settings for the CI/CD dataflow.
-                Only used when converting from standard to CI/CD format.
-
-        Returns:
-            Dict: A dictionary containing the status ('Success' or error) and the updated/new dataflow details.
-        """
-        if workspace_id == '':
-            return {'message': 'Missing workspace id, please check.', 'content': ''}
-        if dataflow_id == '':
-            return {'message': 'Missing dataflow id, please check.', 'content': ''}
-        if destination_type.lower() not in ('lakehouse', 'warehouse'):
-            return {'message': 'destination_type must be "Lakehouse" or "Warehouse".', 'content': ''}
-
-        # Try Fabric API first (CI/CD format)
-        print(f"Checking if dataflow {dataflow_id} is Gen2 CI/CD...")
-        cicd_result = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
-
-        if cicd_result.get('message') == 'Success':
-            # CI/CD dataflow — update in-place
-            cicd_content = cicd_result['content']
-
-            # Extract current display name from .platform
-            display_name = 'dataflow'
-            for part in cicd_content.get('definition', {}).get('parts', []):
-                if part['path'] == '.platform':
-                    platform = json.loads(base64.b64decode(part['payload']).decode('utf-8'))
-                    display_name = platform.get('metadata', {}).get('displayName', 'dataflow')
-                    break
-
-            # Change data destination
-            print(f"Changing data destination to {destination_type}...")
-            modified = self.change_data_destination(
-                cicd_content, destination_type, destination_workspace_id, destination_item_id
-            )
-
-            # Update the existing dataflow in-place
-            print(f"Updating Dataflow Gen2 CI/CD '{display_name}' (ID: {dataflow_id}) in-place...")
-            return self.update_dataflow_gen2_from_definition(
-                workspace_id, dataflow_id, display_name, modified
-            )
-
-        # Standard Gen2 — create new CI/CD with same name, then delete the original
-        print("Dataflow is standard Gen2. Fetching definition via PBI API...")
-        pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
-
-        if pbi_result.get('message') != 'Success':
-            return pbi_result
-
-        pbi_content = pbi_result['content']
-        display_name = pbi_content.get('name', 'dataflow')
-
-        # Change data destination
-        print(f"Changing data destination to {destination_type}...")
-        modified = self.change_data_destination(
-            pbi_content, destination_type, destination_workspace_id, destination_item_id
-        )
-
-        # Convert to CI/CD format (keeping the same name)
-        print("Converting to CI/CD format...")
-        definition = self._convert_gen2_to_cicd_definition(modified, display_name, compute_engine_settings)
-
-        if definition is None:
-            return {'message': {'error': 'Could not extract mashup document from dataflow.', 'content': ''}}
-
-        # Delete the original standard dataflow first (name must be free for the new one)
-        print(f"Deleting original standard dataflow '{display_name}' (ID: {dataflow_id})...")
-        delete_result = self.delete_dataflow(workspace_id, dataflow_id, type='pbi')
-        if delete_result.get('message') != 'Success':
-            print(f"Warning: Could not delete original dataflow: {delete_result}")
-            return {'message': {'error': f'Failed to delete original dataflow before recreating: {delete_result}', 'content': ''}}
-
-        # Create the new CI/CD dataflow with the same name
-        print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {workspace_id}...")
-        return self.create_dataflow_gen2_from_definition(workspace_id, display_name, definition)
 
 
     def _transform_mashup_to_cicd(self, document: str, gen2_content: Dict) -> str:
