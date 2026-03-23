@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+from typing import Literal
 from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -56,4 +57,38 @@ class Database:
                 return {'message': 'Success', 'content': {'rows': list_of_dicts}}
 
         except (SQLAlchemyError, ConnectionError) as e:
+            return {'message': 'Error', 'content': str(e)}
+        
+
+    def write_dataframe(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        schema: str = "dbo",
+        if_exists: Literal["fail", "replace", "append", "delete_rows"] = "append",
+        chunksize: int = 10000
+    ):
+        if df.empty:
+            return {'message': 'Skipped', 'content': 'DataFrame is empty'}
+
+        engine = self.__create_sqlalchemy_engine()
+
+        try:
+            with engine.begin() as connection:
+                df.to_sql(
+                    name=table_name,
+                    con=connection,
+                    schema=schema,
+                    if_exists=if_exists,
+                    index=False,
+                    chunksize=chunksize,
+                    method=None  # required for fast_executemany
+                )
+
+            return {
+                'message': 'Success',
+                'content': f'{len(df)} rows written to {schema}.{table_name}'
+            }
+
+        except SQLAlchemyError as e:
             return {'message': 'Error', 'content': str(e)}
