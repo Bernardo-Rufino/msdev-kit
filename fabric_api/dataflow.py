@@ -981,6 +981,220 @@ class Dataflow:
         return new_m_code, metadata
 
 
+    def get_data_destinations(self, workspace_id: str, dataflow_id: str) -> Dict:
+        """
+        Gets the data destination details for each table in a dataflow.
+
+        Fetches the dataflow definition (CI/CD first, then standard) and extracts
+        which tables have a data destination configured, the destination type
+        (Lakehouse or Warehouse), and the column mappings (for Warehouse with manual mappings).
+
+        Args:
+            workspace_id: The workspace ID where the dataflow resides.
+            dataflow_id: The dataflow ID.
+
+        Returns:
+            Dict: 'message' and 'content' (list of dicts with keys:
+                table, destination_type, workspace_id, item_id, sql_schema,
+                mapping_type ('Automatic' or 'Manual'),
+                columns (list of {source, destination} dicts, empty for automatic mappings)).
+        """
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if dataflow_id == '':
+            return {'message': 'Missing dataflow id, please check.', 'content': ''}
+
+        # Try CI/CD format first
+        cicd_result = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
+        is_cicd = cicd_result.get('message') == 'Success'
+
+        if is_cicd:
+            return self._get_data_destinations_cicd(cicd_result['content'])
+        else:
+            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
+            if pbi_result.get('message') == 'Success':
+                return self._get_data_destinations_standard(pbi_result['content'])
+            else:
+                return {'message': f'Failed to fetch dataflow definition. CI/CD: {cicd_result.get("message")}. PBI: {pbi_result.get("message")}', 'content': ''}
+
+
+    def _parse_column_mappings(self, annotation: str) -> List[Dict]:
+        """Extract column mappings from a DataDestinations annotation string.
+
+        Returns:
+            List of dicts with 'source' and 'destination' keys.
+        """
+        mappings = []
+        for m in re.finditer(
+            r'\[SourceColumnName\s*=\s*"([^"]+)",\s*DestinationColumnName\s*=\s*"([^"]+)"\]',
+            annotation
+        ):
+            mappings.append({'source': m.group(1), 'destination': m.group(2)})
+        return mappings
+
+    def _parse_mapping_type(self, annotation: str) -> str:
+        """Extract mapping type (Manual or Automatic) from a DataDestinations annotation."""
+        kind_match = re.search(r'Settings\s*=\s*\[Kind\s*=\s*"(\w+)"', annotation)
+        return kind_match.group(1) if kind_match else 'Automatic'
+
+    def _get_data_destinations_cicd(self, definition: Dict) -> Dict:
+        """Extract data destination info from a CI/CD dataflow definition."""
+        parts = definition.get('definition', {}).get('parts', [])
+
+        m_code = ''
+        for part in parts:
+            if part['path'] == 'mashup.pq':
+                m_code = base64.b64decode(part['payload']).decode('utf-8')
+                break
+
+        if not m_code:
+            return {'message': 'No mashup.pq found in definition.', 'content': ''}
+
+        parsed = self._parse_cicd_mashup(m_code)
+        if not parsed:
+            return {'message': 'Could not parse mashup.pq.', 'content': ''}
+
+        data_queries = parsed['data_queries']
+        dest_queries = parsed['dest_queries']
+
+        if not data_queries:
+            return {'message': 'Success', 'content': []}
+
+        destinations = []
+
+        # Check for DefaultDestination pattern (Lakehouse)
+        default_dest = None
+        for dq in dest_queries:
+            if dq['name'] == 'DefaultDestination':
+                default_dest = dq
+                break
+
+        if default_dest:
+            body = default_dest['body']
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+            for q in data_queries:
+                destinations.append({
+                    'table': q['name'],
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': None,
+                    'mapping_type': 'Automatic',
+                    'columns': []
+                })
+        else:
+            # Per-query _DataDestination pattern
+            dest_map = {dq['name']: dq for dq in dest_queries}
+            for q in data_queries:
+                dest_key = q['name'] + '_DataDestination'
+                if dest_key not in dest_map:
+                    continue
+                body = dest_map[dest_key]['body']
+                annotation = q.get('annotation', '')
+                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+                schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
+                mapping_type = self._parse_mapping_type(annotation)
+                columns = self._parse_column_mappings(annotation)
+
+                if 'Lakehouse.Contents' in body:
+                    lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+                    destinations.append({
+                        'table': q['name'],
+                        'destination_type': 'Lakehouse',
+                        'workspace_id': ws_match.group(1) if ws_match else '',
+                        'item_id': lh_match.group(1) if lh_match else '',
+                        'sql_schema': schema_match.group(1) if schema_match else None,
+                        'mapping_type': mapping_type,
+                        'columns': columns
+                    })
+                elif 'Fabric.Warehouse' in body:
+                    wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
+                    destinations.append({
+                        'table': q['name'],
+                        'destination_type': 'Warehouse',
+                        'workspace_id': ws_match.group(1) if ws_match else '',
+                        'item_id': wh_match.group(1) if wh_match else '',
+                        'sql_schema': schema_match.group(1) if schema_match else 'dbo',
+                        'mapping_type': mapping_type,
+                        'columns': columns
+                    })
+
+        return {'message': 'Success', 'content': destinations}
+
+
+    def _get_data_destinations_standard(self, definition: Dict) -> Dict:
+        """Extract data destination info from a standard (PBI API) dataflow definition."""
+        m_code = definition.get('pbi:mashup', {}).get('document', '')
+        if not m_code:
+            return {'message': 'No mashup document found in definition.', 'content': ''}
+
+        destinations = []
+
+        # Find _DataDestination queries and their associated data query annotations
+        # First build a map of annotation per data query
+        annotation_pattern = r'(\[DataDestinations[^\n]*\])\r?\n\s*shared\s+(\w+)\s*='
+        annotation_map = {}
+        for ann_match in re.finditer(annotation_pattern, m_code):
+            annotation_map[ann_match.group(2)] = ann_match.group(1)
+
+        # Find _DataDestination queries
+        dest_pattern = r'shared\s+(\w+)_DataDestination\s*=\s*let\b([\s\S]*?);\s*'
+        for match in re.finditer(dest_pattern, m_code):
+            table_name = match.group(1)
+            body = match.group(2)
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
+            annotation = annotation_map.get(table_name, '')
+            mapping_type = self._parse_mapping_type(annotation)
+            columns = self._parse_column_mappings(annotation)
+
+            if 'Lakehouse.Contents' in body:
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'table': table_name,
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else None,
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
+            elif 'Fabric.Warehouse' in body:
+                wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'table': table_name,
+                    'destination_type': 'Warehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': wh_match.group(1) if wh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else 'dbo',
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
+
+        # Check for DefaultDestination (Lakehouse with BindToDefaultDestination)
+        if not destinations:
+            default_match = re.search(r'shared\s+DefaultDestination\s*=\s*let\b([\s\S]*?);', m_code)
+            if default_match:
+                body = default_match.group(1)
+                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+
+                bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
+                for bind_match in re.finditer(bind_pattern, m_code):
+                    destinations.append({
+                        'table': bind_match.group(1),
+                        'destination_type': 'Lakehouse',
+                        'workspace_id': ws_match.group(1) if ws_match else '',
+                        'item_id': lh_match.group(1) if lh_match else '',
+                        'sql_schema': None,
+                        'mapping_type': 'Automatic',
+                        'columns': []
+                    })
+
+        return {'message': 'Success', 'content': destinations}
+
+
     def change_data_destination(self, workspace_id: str, dataflow_id: str, destination_type: str,
                                 destination_workspace_id: str, destination_item_id: str,
                                 mode: str = 'preview', compute_engine_settings: Dict = None) -> Dict:

@@ -155,6 +155,7 @@ Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 | `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2 CI/CD item. |
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
+| `get_data_destinations(workspace_id, dataflow_id)` | Get the data destination details for each table in a dataflow: table name, destination type (Lakehouse/Warehouse), workspace ID, item ID, SQL schema, mapping type (Automatic/Manual), and column mappings (source/destination pairs). |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, mode='preview', ...)` | Fetch the dataflow definition and change its data destination (Lakehouse ↔ Warehouse). `mode='preview'` returns the modified definition without saving, `mode='replace'` updates in-place (CI/CD) or deletes+recreates (standard), `mode='create'` creates a new dataflow with `_cicd` suffix keeping the original. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Create a new Gen2 CI/CD dataflow from an existing one with a different data destination. Supports custom display name and target workspace. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. See details below. |
@@ -266,6 +267,49 @@ Manage Fabric Data Pipelines.
 
 | Method | Description |
 |---|---|
+| `list_pipelines(workspace_id)` | List all Fabric Data Pipelines in a workspace. |
+| `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a Fabric Data Pipeline. |
+| `update_pipeline_definition(workspace_id, pipeline_id, definition)` | Update an existing pipeline definition. |
+| `get_pipeline_activities(workspace_id, pipeline_id)` | Get the list of activities from a pipeline with name, type, and typeProperties. |
+| `find_pipelines_by_dataflow(workspace_id, dataflow_id)` | Find all pipelines in a workspace that reference a specific dataflow (via RefreshDataflow activities). Returns pipeline ID, name, and matching activity names. |
+| `replace_dataflow_id_in_pipeline(workspace_id, pipeline_id, old_dataflow_id, new_dataflow_id)` | Replace a dataflow ID in all RefreshDataflow activities of a pipeline. Useful after recreating a dataflow with `change_data_destination(mode='replace')`. |
+
+#### Replacing a dataflow destination and updating pipelines
+
+When `change_data_destination(mode='replace')` is used on a **standard Gen2** dataflow, the original is deleted and a new CI/CD dataflow is created with a **new ID**. Pipelines referencing the old ID must be updated:
+
+```python
+from fabric_api import Auth, Dataflow, Pipeline
+
+auth = Auth(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
+dataflow = Dataflow(auth.get_token('pbi'))
+pipeline = Pipeline(auth.get_token('fabric'))
+
+workspace_id = '<workspace_id>'
+old_dataflow_id = '<dataflow_id>'
+
+# 1. Replace dataflow destination (creates new CI/CD, deletes original)
+result = dataflow.change_data_destination(
+    workspace_id=workspace_id,
+    dataflow_id=old_dataflow_id,
+    destination_type='Warehouse',
+    destination_workspace_id=workspace_id,
+    destination_item_id='<warehouse_id>',
+    mode='replace'
+)
+new_dataflow_id = result['content']['id']
+
+# 2. Find pipelines referencing the old dataflow ID
+matches = pipeline.find_pipelines_by_dataflow(workspace_id, old_dataflow_id)
+
+# 3. Update each pipeline to use the new ID
+for m in matches['content']:
+    pipeline.replace_dataflow_id_in_pipeline(
+        workspace_id, m['pipeline_id'], old_dataflow_id, new_dataflow_id
+    )
+```
+
+> **Note:** For CI/CD dataflows, `mode='replace'` updates in-place (same ID), so no pipeline updates are needed. Use `mode='create'` to keep the original untouched and create a new dataflow with a `_cicd` suffix instead.
 | `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a Fabric Data Pipeline. |
 | `get_pipeline_activities(workspace_id, pipeline_id)` | Get the list of activities from a pipeline with name, type, and typeProperties. |
 
