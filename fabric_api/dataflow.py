@@ -983,7 +983,7 @@ class Dataflow:
 
     def change_data_destination(self, workspace_id: str, dataflow_id: str, destination_type: str,
                                 destination_workspace_id: str, destination_item_id: str,
-                                update: bool = False, compute_engine_settings: Dict = None) -> Dict:
+                                mode: str = 'preview', compute_engine_settings: Dict = None) -> Dict:
         """
         Changes the data destination of a dataflow, keeping everything else as-is.
 
@@ -992,24 +992,25 @@ class Dataflow:
         (e.g., switch from Lakehouse to Warehouse or vice versa).
         Only queries with an existing data destination (_DataDestination suffix) are affected.
 
-        When update=True, saves the modified definition back to Fabric:
-        - CI/CD Gen2: Updates the existing dataflow definition in-place via Fabric API.
-        - Standard Gen2: Creates a new CI/CD dataflow with the same name and deletes
-          the original standard dataflow. The new dataflow will have a different ID.
-
         Args:
             workspace_id: The workspace ID where the dataflow resides.
             dataflow_id: The dataflow ID.
             destination_type: Target destination type - 'Lakehouse' or 'Warehouse'.
             destination_workspace_id: Workspace ID where the target Lakehouse/Warehouse resides.
             destination_item_id: The ID of the target Lakehouse or Warehouse.
-            update: If True, saves the modified definition back to Fabric. Defaults to False.
+            mode: Controls save behavior. One of:
+                - 'preview' (default): Returns the modified definition without saving.
+                - 'replace': Saves changes back to Fabric, replacing the existing dataflow.
+                    CI/CD Gen2: Updates in-place. Standard Gen2: Deletes original and
+                    creates a new CI/CD dataflow with the same name.
+                - 'create': Creates a new CI/CD dataflow with '_cicd' suffix, keeping the
+                    original dataflow untouched.
             compute_engine_settings: Compute engine settings for the CI/CD dataflow.
-                Only used when update=True and converting from standard to CI/CD format.
+                Only used when mode is 'replace' or 'create' and converting from standard to CI/CD.
 
         Returns:
-            Dict: When update=False, a deep copy of the definition with updated data destinations.
-                When update=True, the API response from updating/creating the dataflow.
+            Dict: When mode='preview', a deep copy of the definition with updated data destinations.
+                When mode='replace' or 'create', the API response from updating/creating the dataflow.
                 Returns error dict if the definition cannot be fetched or format is unrecognized.
         """
         if workspace_id == '':
@@ -1018,6 +1019,8 @@ class Dataflow:
             return {'message': 'Missing dataflow id, please check.', 'content': ''}
         if destination_type.lower() not in ('lakehouse', 'warehouse'):
             return {'message': 'destination_type must be "Lakehouse" or "Warehouse".', 'content': ''}
+        if mode not in ('preview', 'replace', 'create'):
+            return {'message': "mode must be 'preview', 'replace', or 'create'.", 'content': ''}
 
         # Try CI/CD format first (Fabric API)
         print(f"Checking if dataflow {dataflow_id} is Gen2 CI/CD...")
@@ -1039,41 +1042,69 @@ class Dataflow:
         print(f"Changing data destination to {destination_type}...")
         modified = self._change_data_destination(definition, destination_type, destination_workspace_id, destination_item_id)
 
-        if not update:
+        if mode == 'preview':
             return modified
 
-        # Save back to Fabric
+        # Extract display name
         if is_cicd:
-            # Extract display name from .platform
             display_name = 'dataflow'
             for part in modified.get('definition', {}).get('parts', []):
                 if part['path'] == '.platform':
                     platform = json.loads(base64.b64decode(part['payload']).decode('utf-8'))
                     display_name = platform.get('metadata', {}).get('displayName', 'dataflow')
                     break
-
-            print(f"Updating Dataflow Gen2 CI/CD '{display_name}' (ID: {dataflow_id}) in-place...")
-            return self.update_dataflow_gen2_from_definition(
-                workspace_id, dataflow_id, display_name, modified
-            )
         else:
-            # Standard Gen2 — convert to CI/CD, delete original, create new
             display_name = definition.get('name', 'dataflow')
 
-            print("Converting to CI/CD format...")
-            cicd_definition = self._convert_gen2_to_cicd_definition(modified, display_name, compute_engine_settings)
+        if mode == 'replace':
+            if is_cicd:
+                print(f"Updating Dataflow Gen2 CI/CD '{display_name}' (ID: {dataflow_id}) in-place...")
+                return self.update_dataflow_gen2_from_definition(
+                    workspace_id, dataflow_id, display_name, modified
+                )
+            else:
+                # Standard Gen2 — convert to CI/CD, delete original, create new with same name
+                print("Converting to CI/CD format...")
+                cicd_definition = self._convert_gen2_to_cicd_definition(modified, display_name, compute_engine_settings)
 
-            if cicd_definition is None:
-                return {'message': {'error': 'Could not extract mashup document from dataflow.', 'content': ''}}
+                if cicd_definition is None:
+                    return {'message': {'error': 'Could not extract mashup document from dataflow.', 'content': ''}}
 
-            print(f"Deleting original standard dataflow '{display_name}' (ID: {dataflow_id})...")
-            delete_result = self.delete_dataflow(workspace_id, dataflow_id, type='pbi')
-            if delete_result.get('message') != 'Success':
-                print(f"Warning: Could not delete original dataflow: {delete_result}")
-                return {'message': {'error': f'Failed to delete original dataflow before recreating: {delete_result}', 'content': ''}}
+                print(f"Deleting original standard dataflow '{display_name}' (ID: {dataflow_id})...")
+                delete_result = self.delete_dataflow(workspace_id, dataflow_id, type='pbi')
+                if delete_result.get('message') != 'Success':
+                    print(f"Warning: Could not delete original dataflow: {delete_result}")
+                    return {'message': {'error': f'Failed to delete original dataflow before recreating: {delete_result}', 'content': ''}}
 
-            print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {workspace_id}...")
-            return self.create_dataflow_gen2_from_definition(workspace_id, display_name, cicd_definition)
+                print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {workspace_id}...")
+                return self.create_dataflow_gen2_from_definition(workspace_id, display_name, cicd_definition)
+
+        elif mode == 'create':
+            # Create a new dataflow with _cicd suffix, keep original untouched
+            new_name = display_name + '_cicd'
+
+            if is_cicd:
+                # Update display name in .platform for the new copy
+                for part in modified['definition']['parts']:
+                    if part['path'] == '.platform':
+                        platform = json.loads(base64.b64decode(part['payload']).decode('utf-8'))
+                        platform['metadata']['displayName'] = new_name
+                        part['payload'] = base64.b64encode(
+                            json.dumps(platform, indent=2).encode('utf-8')
+                        ).decode('utf-8')
+                        break
+
+                print(f"Creating new Dataflow Gen2 CI/CD '{new_name}' in workspace {workspace_id}...")
+                return self.create_dataflow_gen2_from_definition(workspace_id, new_name, modified)
+            else:
+                print("Converting to CI/CD format...")
+                cicd_definition = self._convert_gen2_to_cicd_definition(modified, new_name, compute_engine_settings)
+
+                if cicd_definition is None:
+                    return {'message': {'error': 'Could not extract mashup document from dataflow.', 'content': ''}}
+
+                print(f"Creating new Dataflow Gen2 CI/CD '{new_name}' in workspace {workspace_id}...")
+                return self.create_dataflow_gen2_from_definition(workspace_id, new_name, cicd_definition)
 
 
     def create_dataflow_with_new_destination(

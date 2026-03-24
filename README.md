@@ -155,8 +155,8 @@ Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 | `get_dataflow_gen2_definition(workspace_id, dataflow_id)` | Get the definition of a Dataflow Gen2 CI/CD item. |
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
-| `change_data_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, update=False, ...)` | Fetch the dataflow definition and change its data destination (Lakehouse ↔ Warehouse). When `update=True`, saves the change back to Fabric in-place. |
-| `create_dataflow_with_new_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Create a new Gen2 CI/CD dataflow from an existing one with a different data destination. |
+| `change_data_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, mode='preview', ...)` | Fetch the dataflow definition and change its data destination (Lakehouse ↔ Warehouse). `mode='preview'` returns the modified definition without saving, `mode='replace'` updates in-place (CI/CD) or deletes+recreates (standard), `mode='create'` creates a new dataflow with `_cicd` suffix keeping the original. |
+| `create_dataflow_with_new_destination(workspace_id, dataflow_id, destination_type, destination_workspace_id, destination_item_id, ...)` | Create a new Gen2 CI/CD dataflow from an existing one with a different data destination. Supports custom display name and target workspace. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. See details below. |
 
 #### `upgrade_to_gen2_cicd`
@@ -260,13 +260,23 @@ Query Kusto (KQL) databases in Microsoft Fabric.
 |---|---|
 | `query_kql_database(kql_query, sort_by)` | Execute a KQL query and return results as a DataFrame. |
 
+### Pipeline
+
+Manage Fabric Data Pipelines.
+
+| Method | Description |
+|---|---|
+| `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a Fabric Data Pipeline. |
+| `get_pipeline_activities(workspace_id, pipeline_id)` | Get the list of activities from a pipeline with name, type, and typeProperties. |
+
 ### Database
 
-Query SQL databases (Lakehouse) via ODBC.
+Query and write to SQL databases (Lakehouse, Warehouse) via ODBC.
 
 | Method | Description |
 |---|---|
 | `execute_query(query)` | Execute a SQL query against a fabric database (lakehouse, warehouse or sql database). |
+| `write_dataframe(df, table_name, schema='dbo', if_exists='append', chunksize=10000)` | Write a pandas DataFrame to a SQL table. `if_exists` supports `'fail'`, `'replace'`, `'append'`, `'delete_rows'`. |
 
 ## Limitations
 
