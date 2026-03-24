@@ -8,5 +8,6 @@ from .admin import Admin
 from .operations import Operations
 from .kql import KQLDatabase
 from .database import Database
+from .pipeline import Pipeline
 
 __version__ = "1.1.0"
