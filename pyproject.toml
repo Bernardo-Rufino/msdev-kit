@@ -27,9 +27,10 @@ Homepage = "https://github.com/Bernardo-Rufino/fabric-api"
 Repository = "https://github.com/Bernardo-Rufino/fabric-api"
 
 [tool.poetry]
-packages = [{include = "fabric_api"}]
+packages = [{include = "fabric_api"}, {include = "msdev_kit"}]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 markers = [
     "integration: marks tests that require live Fabric API access (deselect with '-m \"not integration\"')",
 ]
