@@ -6,18 +6,6 @@ Microsoft developer toolkit for Python: Fabric/Power BI, MS Graph (Entra), and S
 [![Python](https://img.shields.io/pypi/pyversions/msdev-kit)](https://pypi.org/project/msdev-kit/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-## Table of Contents
-
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Authentication](#authentication)
-- [Fabric & Power BI](#fabric--power-bi)
-- [MS Graph (Entra)](#ms-graph-entra)
-- [SharePoint](#sharepoint)
-- [Limitations](#limitations)
-
----
-
 ## Installation
 
 ```shell
