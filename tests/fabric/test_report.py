@@ -607,3 +607,25 @@ class TestGetReportPagesAndVisuals:
         definition = {'format': 'unsupported', 'parts': []}
         df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
         assert len(df) == 0
+
+    def test_pbir_legacy_format_case_insensitive(self, rpt):
+        self._setup(rpt)
+        report_json_payload = base64.b64encode(
+            json.dumps(SAMPLE_REPORT_JSON).encode()
+        ).decode()
+        definition = {
+            'format': 'pbir-legacy',  # all lowercase
+            'parts': [
+                {'path': 'report.json', 'payload': report_json_payload, 'payloadType': 'InlineBase64'}
+            ],
+        }
+        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        assert len(df) == 4
+
+    def test_pbir_legacy_missing_report_json_returns_empty_df(self, rpt):
+        definition = {
+            'format': 'PBIR-Legacy',
+            'parts': [],  # no report.json part
+        }
+        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        assert len(df) == 0
