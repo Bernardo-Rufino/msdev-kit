@@ -8,7 +8,13 @@ Microsoft developer toolkit for Python: Fabric/Power BI, MS Graph (Entra), and S
 
 ## Table of Contents
 
-[Installation](https://github.com/Bernardo-Rufino/msdev-kit#installation) · [Quick Start](https://github.com/Bernardo-Rufino/msdev-kit#quick-start) · [Authentication](https://github.com/Bernardo-Rufino/msdev-kit#authentication) · [Fabric & Power BI](https://github.com/Bernardo-Rufino/msdev-kit#fabric--power-bi) · [MS Graph (Entra)](https://github.com/Bernardo-Rufino/msdev-kit#ms-graph-entra) · [SharePoint](https://github.com/Bernardo-Rufino/msdev-kit#sharepoint) · [Limitations](https://github.com/Bernardo-Rufino/msdev-kit#limitations)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Authentication](#authentication)
+- [Fabric & Power BI](#fabric--power-bi)
+- [MS Graph (Entra)](#ms-graph-entra)
+- [SharePoint](#sharepoint)
+- [Limitations](#limitations)
 
 ---
 
@@ -115,12 +121,12 @@ auth = Auth(tenant_id, client_id, client_secret)
 
 Fabric classes take a token string — call `auth.get_token('fabric')` or `auth.get_token('pbi')` depending on the API.
 
-- [Workspace](https://github.com/Bernardo-Rufino/msdev-kit#workspace) — workspaces, users, permissions
-- [Dataset](https://github.com/Bernardo-Rufino/msdev-kit#dataset) — semantic models, DAX queries, permissions
-- [Report](https://github.com/Bernardo-Rufino/msdev-kit#report) — metadata, definitions, visuals, measures
-- [Dataflow](https://github.com/Bernardo-Rufino/msdev-kit#dataflow) — Gen1, Gen2, Gen2 CI/CD management
-- [Pipeline](https://github.com/Bernardo-Rufino/msdev-kit#pipeline) — Data Pipeline management
-- [Other modules](https://github.com/Bernardo-Rufino/msdev-kit#other-modules) — Capacity, Admin, KQL, Notebook, Database
+- [Workspace](#workspace) — workspaces, users, permissions
+- [Dataset](#dataset) — semantic models, DAX queries, permissions
+- [Report](#report) — metadata, definitions, visuals, measures
+- [Dataflow](#dataflow) — Gen1, Gen2, Gen2 CI/CD management
+- [Pipeline](#pipeline) — Data Pipeline management
+- [Other modules](#other-modules) — Capacity, Admin, KQL, Notebook, Database
 
 ### Workspace
 
