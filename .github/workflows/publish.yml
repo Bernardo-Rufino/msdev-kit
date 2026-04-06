@@ -6,6 +6,7 @@ on:
     paths:
       - "msdev_kit/**"
       - "pyproject.toml"
+      - "README.md"
 
 jobs:
   build:
