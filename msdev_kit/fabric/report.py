@@ -144,6 +144,22 @@ class Report:
         return report_name
 
 
+    @staticmethod
+    def _get_nested_value(data: dict, path: List[Any], default: Any = None) -> Any:
+        """Safely traverses a nested dict/list structure."""
+        current = data
+        for key in path:
+            if isinstance(current, dict):
+                current = current.get(key)
+            elif isinstance(current, list) and isinstance(key, int) and len(current) > key:
+                current = current[key]
+            else:
+                return default
+            if current is None:
+                return default
+        return current
+
+
     def list_report_pages(
                 self,
                 workspace_id: str = '',
@@ -214,21 +230,6 @@ class Report:
         Returns:
             Dict: status message and content.
         """
-        def get_nested_value(data: dict, path: List[Any], default: Any = None) -> Any:
-            """Safely traverses a nested dictionary/list structure."""
-            current = data
-            for key in path:
-                if isinstance(current, dict):
-                    current = current.get(key)
-                elif isinstance(current, list) and isinstance(key, int) and len(current) > key:
-                    current = current[key]
-                else:
-                    return default
-
-                if current is None:
-                    return default
-            return current
-
         # List to hold flat dictionary records for the final DataFrame
         report_records: List[Dict[str, Any]] = []
 
@@ -241,7 +242,7 @@ class Report:
                 print("Error: Invalid JSON format.")
                 return pd.DataFrame()
 
-        sections = get_nested_value(data, ['config', 'sections'])
+        sections = self._get_nested_value(data, ['config', 'sections'])
         if not sections:
             sections = data.get('sections', [])
 
@@ -252,7 +253,7 @@ class Report:
 
             for vc in visual_containers:
                 # The 'name' property inside 'config' is the unique Visual ID
-                visual_id = get_nested_value(vc, ['config', 'name'], 'No ID')
+                visual_id = self._get_nested_value(vc, ['config', 'name'], 'No ID')
                 visual_type = 'Unknown'
                 visual_title = 'No Title'
                 vc_config = vc.get('config', {})
@@ -281,14 +282,12 @@ class Report:
                             ['text', 0, 'properties', 'text', 'expr', 'Literal', 'Value'],
                             # Path 4: Text Visual/Button Label (sometimes the second text object)
                             ['text', 1, 'properties', 'text', 'expr', 'Literal', 'Value'],
-                            # Path 5: Text Visual/Button Label (sometimes the second text object)
-                            ['text', 1, 'properties', 'text', 'expr', 'Literal', 'Value']
                         ]
 
                         # Check on Objects
                         found_title = 'No Title'
                         for path in title_paths:
-                            title_value = get_nested_value(objects, path)
+                            title_value = self._get_nested_value(objects, path)
 
                             if isinstance(title_value, str) and title_value:
                                 found_title = title_value.strip("'").replace('\'', "'")
@@ -296,7 +295,7 @@ class Report:
 
                         # Check on vcObjects
                         for path in title_paths:
-                            title_value = get_nested_value(vc_objects, path)
+                            title_value = self._get_nested_value(vc_objects, path)
 
                             if isinstance(title_value, str) and title_value:
                                 found_title = title_value.strip("'").replace('\'', "'")
@@ -308,8 +307,8 @@ class Report:
                 title_expression = None
                 if visual_title == visual_type:
                     # Check for dynamic title expression
-                    title_obj = get_nested_value(objects, ['title', 0, 'properties', 'text', 'expr'])
-                    if title_obj and not get_nested_value(title_obj, ['Literal', 'Value']):
+                    title_obj = self._get_nested_value(objects, ['title', 0, 'properties', 'text', 'expr'])
+                    if title_obj and not self._get_nested_value(title_obj, ['Literal', 'Value']):
                         # Capture the full expression structure (DAX)
                         title_expression = str(title_obj)
 
@@ -354,19 +353,6 @@ class Report:
             pd.DataFrame: one row per visual with columns report_id, pageIndex,
                 pageName, visual_id, type, title, title_expression.
         """
-        def get_nested_value(data: dict, path: List[Any], default: Any = None) -> Any:
-            current = data
-            for key in path:
-                if isinstance(current, dict):
-                    current = current.get(key)
-                elif isinstance(current, list) and isinstance(key, int) and len(current) > key:
-                    current = current[key]
-                else:
-                    return default
-                if current is None:
-                    return default
-            return current
-
         title_paths = [
             ['title', 0, 'properties', 'text', 'expr', 'Literal', 'Value'],
             ['general', 0, 'properties', 'title', 'expr', 'Literal', 'Value'],
@@ -418,7 +404,7 @@ class Report:
 
                     found_title = 'No Title'
                     for path in title_paths:
-                        title_value = get_nested_value(objects, path)
+                        title_value = self._get_nested_value(objects, path)
                         if isinstance(title_value, str) and title_value:
                             found_title = title_value.strip("'").replace('\'', "'")
                             break
@@ -426,10 +412,10 @@ class Report:
                     visual_title = found_title if found_title != 'No Title' else visual_type
 
                     if visual_title == visual_type:
-                        title_obj = get_nested_value(
+                        title_obj = self._get_nested_value(
                             objects, ['title', 0, 'properties', 'text', 'expr']
                         )
-                        if title_obj and not get_nested_value(title_obj, ['Literal', 'Value']):
+                        if title_obj and not self._get_nested_value(title_obj, ['Literal', 'Value']):
                             title_expression = str(title_obj)
 
                 report_records.append({
