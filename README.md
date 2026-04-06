@@ -174,7 +174,7 @@ pages = rpt.list_report_pages(workspace_id, report_id)
 | `get_report_metadata(workspace_id, report_id)` | Get metadata for a specific report. |
 | `get_report_name(workspace_id, report_id)` | Get a report's display name. |
 | `list_report_pages(workspace_id, report_id)` | List all pages in a report. |
-| `get_report_json_pages_and_visuals(json_data, workspace_id, report_id)` | Parse a PBIR-Legacy report JSON and extract pages/visuals into a DataFrame. |
+| `get_legacy_report_pages_and_visuals(json_data, workspace_id, report_id)` | Parse a PBIR-Legacy report JSON and extract pages/visuals into a DataFrame. |
 | `get_legacy_report_json(workspace_id, report_id, operations)` | Get and decode the full report definition for PBIR-Legacy reports. |
 | `export_report(workspace_id, report_id, ...)` | Export a report as a `.pbix` file. |
 | `get_report_measures(workspace_id, report_id, operations)` | Extract report-level measures and generate a DAX Query View script. |

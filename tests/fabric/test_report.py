@@ -368,10 +368,10 @@ class TestGenerateTmdlScript:
 
 
 # ===========================================================================
-# get_report_json_pages_and_visuals — visual extraction
+# get_legacy_report_pages_and_visuals — visual extraction
 # ===========================================================================
 
-class TestGetReportJsonPagesAndVisuals:
+class TestGetLegacyReportPagesAndVisuals:
 
     def test_extracts_visuals(self, rpt):
         # Mock get_report_name since it calls the API
@@ -381,7 +381,7 @@ class TestGetReportJsonPagesAndVisuals:
         import os
         os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
 
-        df = rpt.get_report_json_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
 
         assert len(df) == 4  # 3 visuals on page 1, 1 on page 2
 
@@ -392,7 +392,7 @@ class TestGetReportJsonPagesAndVisuals:
         import os
         os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
 
-        df = rpt.get_report_json_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
 
         page_names = df['pageName'].unique().tolist()
         assert 'Overview' in page_names
@@ -405,7 +405,7 @@ class TestGetReportJsonPagesAndVisuals:
         import os
         os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
 
-        df = rpt.get_report_json_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
 
         titles = df['title'].tolist()
         assert 'Revenue by Region' in titles
@@ -418,7 +418,7 @@ class TestGetReportJsonPagesAndVisuals:
         import os
         os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
 
-        df = rpt.get_report_json_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
 
         group_row = df[df['type'] == 'Visual Group (Container)']
         assert len(group_row) == 1
@@ -431,12 +431,12 @@ class TestGetReportJsonPagesAndVisuals:
         import os
         os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
 
-        df = rpt.get_report_json_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals(SAMPLE_REPORT_JSON, 'ws-1', 'rpt-1')
 
         card_row = df[df['type'] == 'card']
         assert len(card_row) == 1
         assert card_row.iloc[0]['title'] == 'card'
 
     def test_invalid_json_returns_empty_df(self, rpt):
-        df = rpt.get_report_json_pages_and_visuals('not valid json', 'ws-1', 'rpt-1')
+        df = rpt.get_legacy_report_pages_and_visuals('not valid json', 'ws-1', 'rpt-1')
         assert len(df) == 0

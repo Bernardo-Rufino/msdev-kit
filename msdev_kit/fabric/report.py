@@ -198,7 +198,7 @@ class Report:
                 return {'message': {'error': error_message, 'content': response}}
 
 
-    def get_report_json_pages_and_visuals(
+    def get_legacy_report_pages_and_visuals(
                     self,
                     json_data: str,
                     workspace_id: str,
