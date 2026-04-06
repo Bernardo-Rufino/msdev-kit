@@ -135,6 +135,43 @@ class Workspace:
             return {'message': {'error': error_message, 'content': response}}
 
 
+    def list_workspaces(self, admin: bool = False, top: int = 5000) -> Dict:
+        """
+        List all workspaces the authenticated SPN has access to.
+
+        Args:
+            admin (bool, optional): use the admin API to list all tenant workspaces.
+                Requires tenant-level admin or read-all permissions. Defaults to False.
+            top (int, optional): max results per page (admin only). Defaults to 5000.
+
+        Returns:
+            Dict: status message and content.
+        """
+        if admin:
+            all_workspaces = []
+            request_url = self.main_url + f'/admin/groups?$top={top}'
+            while request_url:
+                r = requests.get(url=request_url, headers=self.headers)
+                if r.status_code != 200:
+                    body = json.loads(r.content)
+                    return {'message': {'error': body['error']['message'], 'content': body}}
+                body = json.loads(r.content)
+                all_workspaces.extend(body.get('value', []))
+                request_url = body.get('odata.nextLink', None)
+            response = all_workspaces
+        else:
+            r = requests.get(url=self.main_url + '/groups', headers=self.headers)
+            if r.status_code != 200:
+                body = json.loads(r.content)
+                return {'message': {'error': body['error']['message'], 'content': body}}
+            response = json.loads(r.content).get('value', [])
+
+        df = pd.DataFrame(response)
+        df.to_excel(f'{self.workspace_dir}/workspaces_all.xlsx', index=False)
+
+        return {'message': 'Success', 'content': response}
+
+
     def get_workspace_details(
                 self, 
                 workspace_id: str = '') -> Dict:
