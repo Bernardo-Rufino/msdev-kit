@@ -486,6 +486,62 @@ class Report:
             return pd.DataFrame()
 
 
+    def get_report_definition(
+                self,
+                workspace_id: str = '',
+                report_id: str = '',
+                operations: Operations = None) -> Dict:
+        """
+        Fetch the raw report definition for any format (PBIR or PBIR-Legacy).
+
+        Returns the definition dict as-is from the Fabric API, without any
+        format-specific decoding. Pass the returned 'content' directly to
+        get_report_pages_and_visuals.
+
+        Args:
+            workspace_id (str): workspace id where the report is.
+            report_id (str): report id.
+            operations (Operations): Operations class instance.
+
+        Returns:
+            Dict: status message and content. On success, content is a dict
+                with 'format' and 'parts' keys.
+        """
+        if not workspace_id:
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if not report_id:
+            return {'message': 'Missing report id, please check.', 'content': ''}
+
+        request_url = f'{self.main_fabric_url}/workspaces/{workspace_id}/reports/{report_id}/getDefinition'
+        r = requests.post(url=request_url, headers=self.headers)
+        status = r.status_code
+        response = json.loads(r.content)
+        print(f'status_code={status}')
+
+        if status != 202:
+            error_message = response.get('error', {}).get('message', 'Unknown error')
+            return {'message': {'error': error_message}, 'content': response}
+
+        operation_id = r.headers.get('x-ms-operation-id')
+        print(f'operation_id={operation_id}')
+
+        while True:
+            active_operation_state = operations.get_operation_state(operation_id)
+            print('Operation state:', active_operation_state)
+            if active_operation_state:
+                operation_state = active_operation_state.get('operation_state', '')
+                if operation_state in ('Succeeded', 'Failed'):
+                    sleep(1)
+                    break
+            sleep(1)
+
+        report_content = operations.get_operation_result(operation_id).get('content', '')
+        report_definition = report_content.get('definition')
+        print(f'Report format: {report_definition.get("format")}')
+
+        return {'message': 'Success', 'content': report_definition}
+
+
     def get_legacy_report_json(
                 self,
                 workspace_id: str = '',
@@ -1159,5 +1215,3 @@ class Report:
                 'users_failed': users_failed
             }
         }
-
-
