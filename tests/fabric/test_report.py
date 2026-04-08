@@ -509,6 +509,41 @@ class TestGetLegacyReportPagesAndVisuals:
         df = rpt.get_legacy_report_pages_and_visuals('not valid json', 'ws-1', 'rpt-1')
         assert len(df) == 0
 
+    def test_visual_container_config_as_string(self, rpt):
+        """Real API responses encode each visualContainer's config as a JSON string."""
+        rpt.get_report_name = lambda ws, rid: 'TestReport'
+        rpt.data_dir = '/tmp/test_reports'
+
+        import os
+        os.makedirs(f'{rpt.data_dir}/pages_and_visuals', exist_ok=True)
+
+        json_with_string_configs = {
+            'config': {
+                'sections': [
+                    {
+                        'displayName': 'Overview',
+                        'visualContainers': [
+                            {
+                                'config': json.dumps({
+                                    'name': 'visual-001',
+                                    'singleVisual': {
+                                        'visualType': 'barChart',
+                                        'objects': {
+                                            'title': [{'properties': {'text': {'expr': {'Literal': {'Value': "'Revenue by Region'"}}}}}]
+                                        },
+                                        'vcObjects': {},
+                                    },
+                                })
+                            }
+                        ]
+                    }
+                ]
+            }
+        }
+        df = rpt.get_legacy_report_pages_and_visuals(json_with_string_configs, 'ws-1', 'rpt-1')
+        assert len(df) == 1
+        assert df.iloc[0]['title'] == 'Revenue by Region'
+
 
 # ===========================================================================
 # get_pbir_report_pages_and_visuals
@@ -577,8 +612,15 @@ class TestGetReportPagesAndVisuals:
 
     def test_pbir_format_routes_to_pbir_parser(self, rpt):
         self._setup(rpt)
-        definition = {'format': 'PBIR', 'parts': PBIR_PARTS}
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'PBIR'},
+        }
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': 'Success',
+            'content': {'format': 'PBIR', 'parts': PBIR_PARTS},
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
         assert len(df) == 4
         assert 'Overview' in df['pageName'].values
 
@@ -587,45 +629,76 @@ class TestGetReportPagesAndVisuals:
         report_json_payload = base64.b64encode(
             json.dumps(SAMPLE_REPORT_JSON).encode()
         ).decode()
-        definition = {
-            'format': 'PBIR-Legacy',
-            'parts': [
-                {'path': 'report.json', 'payload': report_json_payload, 'payloadType': 'InlineBase64'}
-            ],
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'PBIRLegacy'},
         }
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': 'Success',
+            'content': {
+                'format': 'PBIR-Legacy',
+                'parts': [
+                    {'path': 'report.json', 'payload': report_json_payload, 'payloadType': 'InlineBase64'},
+                ],
+            },
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
         assert len(df) == 4
         assert 'Overview' in df['pageName'].values
 
     def test_format_check_is_case_insensitive(self, rpt):
         self._setup(rpt)
-        definition = {'format': 'pbir', 'parts': PBIR_PARTS}
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'pbir'},  # all lowercase
+        }
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': 'Success',
+            'content': {'format': 'PBIR', 'parts': PBIR_PARTS},
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
         assert len(df) == 4
 
-    def test_unknown_format_returns_empty_df(self, rpt):
-        definition = {'format': 'unsupported', 'parts': []}
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+    def test_metadata_failure_returns_empty_df(self, rpt):
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': {'error': 'Not found'},
+            'content': '',
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
         assert len(df) == 0
 
-    def test_pbir_legacy_format_case_insensitive(self, rpt):
-        self._setup(rpt)
-        report_json_payload = base64.b64encode(
-            json.dumps(SAMPLE_REPORT_JSON).encode()
-        ).decode()
-        definition = {
-            'format': 'pbir-legacy',  # all lowercase
-            'parts': [
-                {'path': 'report.json', 'payload': report_json_payload, 'payloadType': 'InlineBase64'}
-            ],
+    def test_definition_failure_returns_empty_df(self, rpt):
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'PBIR'},
         }
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
-        assert len(df) == 4
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': {'error': 'Not found'},
+            'content': '',
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
+        assert len(df) == 0
+
+    def test_unknown_format_returns_empty_df(self, rpt):
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'unsupported'},
+        }
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': 'Success',
+            'content': {'format': 'unsupported', 'parts': []},
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
+        assert len(df) == 0
 
     def test_pbir_legacy_missing_report_json_returns_empty_df(self, rpt):
-        definition = {
-            'format': 'PBIR-Legacy',
-            'parts': [],  # no report.json part
+        rpt.get_report_metadata = lambda ws, rid: {
+            'message': 'Success',
+            'content': {'format': 'PBIRLegacy'},
         }
-        df = rpt.get_report_pages_and_visuals(definition, 'ws-1', 'rpt-1')
+        rpt.get_report_definition = lambda ws, rid, ops: {
+            'message': 'Success',
+            'content': {'format': 'PBIR-Legacy', 'parts': []},
+        }
+        df = rpt.get_report_pages_and_visuals('ws-1', 'rpt-1', None)
         assert len(df) == 0

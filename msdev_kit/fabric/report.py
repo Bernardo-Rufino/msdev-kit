@@ -257,6 +257,11 @@ class Report:
                 visual_type = 'Unknown'
                 visual_title = 'No Title'
                 vc_config = vc.get('config', {})
+                if isinstance(vc_config, str):
+                    try:
+                        vc_config = json.loads(vc_config)
+                    except json.JSONDecodeError:
+                        vc_config = {}
 
                 # --- 1. Handle Visual Groups (e.g., Filter Pane) ---
                 single_visual_group = vc_config.get('singleVisualGroup')
