@@ -252,8 +252,6 @@ class Report:
             visual_containers = section.get('visualContainers', [])
 
             for vc in visual_containers:
-                # The 'name' property inside 'config' is the unique Visual ID
-                visual_id = self._get_nested_value(vc, ['config', 'name'], 'No ID')
                 visual_type = 'Unknown'
                 visual_title = 'No Title'
                 vc_config = vc.get('config', {})
@@ -262,6 +260,9 @@ class Report:
                         vc_config = json.loads(vc_config)
                     except json.JSONDecodeError:
                         vc_config = {}
+
+                # The 'name' property inside 'config' is the unique Visual ID
+                visual_id = vc_config.get('name', 'No ID')
 
                 # --- 1. Handle Visual Groups (e.g., Filter Pane) ---
                 single_visual_group = vc_config.get('singleVisualGroup')
@@ -332,9 +333,11 @@ class Report:
 
         # Convert the list of records into a Pandas DataFrame
         report_name = self.get_report_name(workspace_id, report_id).replace(' ', '').replace('(', '').replace(')', '').strip()
+        folder_path = f'{self.data_dir}/pages_and_visuals'
+        os.makedirs(folder_path, exist_ok=True)
         df = pd.DataFrame(report_records)
         df.sort_values(by=['pageIndex', 'title'], inplace=True)
-        df.to_excel(f'{self.data_dir}/pages_and_visuals/{report_name}.xlsx', index=False)
+        df.to_excel(f'{folder_path}/{report_name}.xlsx', index=False)
 
         return df
 

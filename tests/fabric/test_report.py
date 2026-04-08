@@ -542,6 +542,7 @@ class TestGetLegacyReportPagesAndVisuals:
         }
         df = rpt.get_legacy_report_pages_and_visuals(json_with_string_configs, 'ws-1', 'rpt-1')
         assert len(df) == 1
+        assert df.iloc[0]['visual_id'] == 'visual-001'
         assert df.iloc[0]['title'] == 'Revenue by Region'
 
 
