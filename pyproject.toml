@@ -21,6 +21,7 @@ dependencies = [
     "pyyaml (>=6.0.3,<7.0.0)",
     "azure-kusto-data (>=6.0.1,<7.0.0)",
     "cryptography (>=46.0.6,<47.0.0)",
+    "pydantic (>=2.13.4,<3.0.0)",
 ]
 
 [project.urls]

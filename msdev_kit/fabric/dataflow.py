@@ -7,9 +7,21 @@ import time
 import base64
 import requests
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Optional
+from pydantic import BaseModel, ConfigDict
 from .utilities import create_directory
 from .workspace import Workspace
+
+
+class ComputeEngineSettingsModel(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    allowFastCopy: Optional[bool] = None
+    allowPartitionedCompute: Optional[bool] = None
+    allowModernEvaluationEngine: Optional[bool] = None
+    enableVorder: Optional[bool] = None
+    enableOptimizedCopyToLakehouse: Optional[bool] = None
+    maxConcurrency: Optional[int] = None
 
 
 class Dataflow:
@@ -473,6 +485,110 @@ class Dataflow:
             error_message = response.text
             print(f"Error updating Dataflow Gen2: {response.status_code} - {error_message}")
             return {'message': {'error': error_message, 'status_code': response.status_code}}
+
+
+    def update_compute_engine_settings(self, workspace_id: str, dataflow_id: str, settings: Dict = None) -> Dict:
+        """
+        Updates the computeEngineSettings of a Dataflow Gen2 CI/CD (native Fabric) item.
+        Only works for Dataflow Gen2 (CI/CD) items.
+
+        Args:
+            workspace_id (str): The ID of the workspace where the Dataflow Gen2 resides.
+            dataflow_id (str): The ID of the Dataflow Gen2 to update.
+            settings (Dict, optional): Custom compute engine settings. If not provided,
+                uses the default configuration.
+
+        Returns:
+            Dict: status message and content of the updated dataflow.
+        """
+        # Validate settings using Pydantic if provided
+        if settings is not None:
+            try:
+                validated = ComputeEngineSettingsModel(**settings)
+                settings = validated.model_dump(exclude_unset=True)
+            except Exception as e:
+                return {'message': {'error': f'Invalid compute engine settings: {e}'}}
+
+        # Fetch current definition
+        definition_result = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
+        if definition_result.get('message') != 'Success':
+            # Not a CI/CD Gen2.1 dataflow or error fetching
+            return {
+                'message': {
+                    'error': 'This dataflow is not a Dataflow Gen2 CI/CD or could not retrieve its definition.',
+                    'details': definition_result.get('message')
+                }
+            }
+
+        definition = definition_result['content']
+        display_name = self.get_dataflow_name(workspace_id, dataflow_id) or 'dataflow'
+
+        # Modify computeEngineSettings in queryMetadata.json
+        parts = definition.get('definition', {}).get('parts', [])
+        patched = False
+
+        for part in parts:
+            if part.get('path') == 'queryMetadata.json':
+                payload = part.get('payload')
+                if payload:
+                    try:
+                        metadata_bytes = base64.b64decode(payload)
+                        try:
+                            decoded_str = metadata_bytes.decode('utf-8-sig')
+                        except UnicodeDecodeError:
+                            decoded_str = metadata_bytes.decode('utf-8', errors='replace')
+                        
+                        metadata = json.loads(decoded_str)
+                        
+                        current_engine_settings = metadata.get('computeEngineSettings', {})
+                        new_engine_settings = {}
+                        
+                        # Keep both old and new keys allowed in the schema
+                        allowed_keys = [
+                            "allowFastCopy",
+                            "allowPartitionedCompute",
+                            "allowModernEvaluationEngine",
+                            "enableVorder",
+                            "enableOptimizedCopyToLakehouse",
+                            "maxConcurrency"
+                        ]
+                        for key in allowed_keys:
+                            if key in current_engine_settings:
+                                new_engine_settings[key] = current_engine_settings[key]
+                        
+                        if settings is not None:
+                            # Update existing settings with user-provided settings
+                            for k, v in settings.items():
+                                new_engine_settings[k] = v
+                            
+                            # If maxConcurrency is not in settings, remove it
+                            if 'maxConcurrency' not in settings:
+                                new_engine_settings.pop('maxConcurrency', None)
+                        else:
+                            # Default settings if none provided (without maxConcurrency)
+                            new_engine_settings = {
+                                "allowFastCopy": False,
+                                "allowPartitionedCompute": True,
+                                "allowModernEvaluationEngine": True,
+                                "enableVorder": False,
+                                "enableOptimizedCopyToLakehouse": True
+                            }
+                        
+                        metadata['computeEngineSettings'] = new_engine_settings
+                        
+                        # Minify and encode
+                        updated_bytes = json.dumps(metadata, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+                        part['payload'] = base64.b64encode(updated_bytes).decode('utf-8')
+                        patched = True
+                    except Exception as e:
+                        return {'message': {'error': f'Failed to patch queryMetadata.json: {e}'}}
+                break
+
+        if not patched:
+            return {'message': {'error': 'queryMetadata.json not found in dataflow definition.'}}
+
+        # Call update_dataflow_gen2_from_definition to save changes
+        return self.update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)
 
 
     def _rewrite_data_destination_queries(self, m_code: str, destination_type: str,
