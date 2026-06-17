@@ -1,0 +1,121 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "msdev_kit/**"
+      - "pyproject.toml"
+      - "README.md"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.NEW_VERSION }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install build dependencies
+        run: pip install poetry-core build
+
+      - name: Determine version
+        run: |
+          # Get local version from pyproject.toml
+          LOCAL_VERSION=$(python -c "
+          import re
+          text = open('pyproject.toml').read()
+          print(re.search(r'version\s*=\s*\"([^\"]+)\"', text).group(1))
+          ")
+          echo "Local version: $LOCAL_VERSION"
+
+          # Get latest version from PyPI (empty if package doesn't exist yet)
+          PYPI_VERSION=$(pip index versions msdev-kit 2>/dev/null | head -1 | sed 's/.*(\(.*\))/\1/' || echo "")
+          echo "PyPI version: $PYPI_VERSION"
+
+          # Pick the higher version between local and PyPI
+          BASE_VERSION=$(python -c "
+          from packaging.version import Version
+          local = '${LOCAL_VERSION}'
+          pypi = '${PYPI_VERSION}' or '0.0.0'
+          print(str(max(Version(local), Version(pypi))))
+          ")
+
+          # If that version already exists on PyPI, bump the patch number
+          if [ "$BASE_VERSION" = "$PYPI_VERSION" ]; then
+            NEW_VERSION=$(python -c "
+          v = '${BASE_VERSION}'.split('.')
+          v[-1] = str(int(v[-1]) + 1)
+          print('.'.join(v))
+          ")
+          else
+            NEW_VERSION="$BASE_VERSION"
+          fi
+
+          echo "Publishing version: $NEW_VERSION"
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+        id: version
+
+      - name: Set version in source files
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.NEW_VERSION }}"
+
+          # Update pyproject.toml with the new version
+          python -c "
+          import re
+          text = open('pyproject.toml').read()
+          text = re.sub(r'(version\s*=\s*\")([^\"]+)(\")', r'\g<1>${NEW_VERSION}\3', text)
+          open('pyproject.toml', 'w').write(text)
+          "
+
+          # Update __init__.py with the new version
+          python -c "
+          import re
+          text = open('msdev_kit/__init__.py').read()
+          text = re.sub(r'(__version__\s*=\s*\")([^\"]+)(\")', r'\g<1>${NEW_VERSION}\3', text)
+          open('msdev_kit/__init__.py', 'w').write(text)
+          "
+
+      - name: Build package
+        run: python -m build
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  release:
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ needs.build.outputs.version }}"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes
