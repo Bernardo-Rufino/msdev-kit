@@ -274,7 +274,7 @@ class Dataflow:
                     response = json.loads(r.content)
                     error_message = response['error']
 
-                except:
+                except Exception:
                     return {'message': 'Error reading JSON response'}
                 
                 return {'message': {'error': error_message, 'content': response}}
@@ -337,7 +337,7 @@ class Dataflow:
                     response = json.loads(r.content)
                     error_message = response['error']
 
-                except:
+                except Exception:
                     return {'message': 'Error reading JSON response'}
                 
                 return {'message': {'error': error_message, 'content': response}}
@@ -926,7 +926,6 @@ class Dataflow:
             return {'message': 'Could not parse mashup.pq.', 'content': ''}
 
         data_queries = parsed['data_queries']
-        source_queries = parsed['source_queries']
         dest_queries = parsed['dest_queries']
 
         if not data_queries:

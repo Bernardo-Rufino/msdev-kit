@@ -1,4 +1,3 @@
-import os
 import json
 import requests
 import pandas as pd
@@ -9,30 +8,31 @@ from .workspace import Workspace
 
 class Capacity:
 
-    def __init__(self, pbi_token: str, fabric_token: str = None, azure_token: str = None):
+    def __init__(
+        self, pbi_token: str, fabric_token: str = None, azure_token: str = None
+    ):
         """
         Initialize variables.
         """
         # Power BI Capacity parameters
-        self.main_url = 'https://api.powerbi.com/v1.0/myorg'
+        self.main_url = "https://api.powerbi.com/v1.0/myorg"
 
         # Fabric Capacity parameters
-        self.fabric_api_base_url = 'https://management.azure.com'
+        self.fabric_api_base_url = "https://management.azure.com"
         self.azure_subscription_id = None
         self.azure_resource_group = None
 
         # General parameters
         self.token = pbi_token
-        self.headers = {'Authorization': f'Bearer {self.token}'}
+        self.headers = {"Authorization": f"Bearer {self.token}"}
         self.workspace = Workspace(self.token)
 
         # Directories
-        self.capacities_dir = './data/capacities'
+        self.capacities_dir = "./data/capacities"
         self.directories = [self.capacities_dir]
 
         for dir in self.directories:
             create_directory(dir)
-
 
     def list_powerbi_capacities(self) -> Dict:
         """
@@ -44,44 +44,45 @@ class Capacity:
         Returns:
             Dict: status message and content.
         """
-        
-        # Main URL
-        request_url = f'{self.main_url}/capacities'
 
-        filename = f'capacities_powerbi.xlsx'
+        # Main URL
+        request_url = f"{self.main_url}/capacities"
+
+        filename = "capacities_powerbi.xlsx"
 
         # Make the request
         r = requests.get(url=request_url, headers=self.headers)
 
         # Get HTTP status and content
         status = r.status_code
-        response = json.loads(r.content).get('value', '')
+        response = json.loads(r.content).get("value", "")
 
         # If success...
         if status == 200:
-            if type == 'fabric':
+            if type == "fabric":  # noqa: E721
                 df = pd.json_normalize(response)
-                df['name'] = df['displayName']
-                df.drop(columns=['displayName'], inplace=True)
+                df["name"] = df["displayName"]
+                df.drop(columns=["displayName"], inplace=True)
             else:
                 df = pd.DataFrame(response)
-            df.to_excel(f'{self.capacities_dir}/{filename}', index=False)
-            result = json.loads(df.to_json(orient='records'))
+            df.to_excel(f"{self.capacities_dir}/{filename}", index=False)
+            result = json.loads(df.to_json(orient="records"))
 
-            return {'message': 'Success', 'content': result}
+            return {"message": "Success", "content": result}
 
-        else:                
+        else:
             # If any error happens, return message.
             response = json.loads(r.content)
-            error_message = response['error']['message']
+            error_message = response["error"]["message"]
 
-            return {'message': {'error': error_message, 'content': response}}
+            return {"message": {"error": error_message, "content": response}}
 
-
-    def list_fabric_capacities(self, azure_subscription_id: str, azure_resource_group: str = None) -> Dict:
+    def list_fabric_capacities(
+        self, azure_subscription_id: str, azure_resource_group: str = None
+    ) -> Dict:
         """
         List all Fabric capacities that the user has access to, to a given subscription.
-        
+
         If a resource group is provided, only capacities within that resource group will be listed.
 
         Args:
@@ -91,47 +92,45 @@ class Capacity:
         Returns:
             Dict: status message and content.
         """
-        
+
         # Main URL
         if azure_resource_group:
-            request_url = f'{self.fabric_api_base_url}/subscriptions/{azure_subscription_id}/resourceGroups/{azure_resource_group}/providers/Microsoft.Fabric/capacities?api-version=2023-11-01'
+            request_url = f"{self.fabric_api_base_url}/subscriptions/{azure_subscription_id}/resourceGroups/{azure_resource_group}/providers/Microsoft.Fabric/capacities?api-version=2023-11-01"
         else:
-            request_url = f'{self.fabric_api_base_url}/subscriptions/{azure_subscription_id}/providers/Microsoft.Fabric/capacities?api-version=2023-11-01'
+            request_url = f"{self.fabric_api_base_url}/subscriptions/{azure_subscription_id}/providers/Microsoft.Fabric/capacities?api-version=2023-11-01"
 
-        filename = f'capacities_powerbi.xlsx'
+        filename = "capacities_powerbi.xlsx"
 
         # Make the request
         r = requests.get(url=request_url, headers=self.headers)
 
         # Get HTTP status and content
         status = r.status_code
-        response = json.loads(r.content).get('value', '')
+        response = json.loads(r.content).get("value", "")
 
         # If success...
         if status == 200:
-            if type == 'fabric':
+            if type == "fabric":  # noqa: E721
                 df = pd.json_normalize(response)
-                df['name'] = df['displayName']
-                df.drop(columns=['displayName'], inplace=True)
+                df["name"] = df["displayName"]
+                df.drop(columns=["displayName"], inplace=True)
             else:
                 df = pd.DataFrame(response)
-            df.to_excel(f'{self.capacities_dir}/{filename}', index=False)
-            result = json.loads(df.to_json(orient='records'))
+            df.to_excel(f"{self.capacities_dir}/{filename}", index=False)
+            result = json.loads(df.to_json(orient="records"))
 
-            return {'message': 'Success', 'content': result}
+            return {"message": "Success", "content": result}
 
-        else:                
+        else:
             # If any error happens, return message.
             response = json.loads(r.content)
-            error_message = response['error']['message']
+            error_message = response["error"]["message"]
 
-            return {'message': {'error': error_message, 'content': response}}
-
+            return {"message": {"error": error_message, "content": response}}
 
     def assign_workspace_to_capacity(
-                self, 
-                workspace_id: str = '',
-                capacity_id: str = '') -> Dict:
+        self, workspace_id: str = "", capacity_id: str = ""
+    ) -> Dict:
         """
         Assign a workspace to a specific capacity.
 
@@ -144,23 +143,22 @@ class Capacity:
         """
 
         # If both workspace and capacity were provided...
-        if (workspace_id != '') & (capacity_id != ''):
+        if (workspace_id != "") & (capacity_id != ""):
 
             ws = self.workspace.get_worspace_details(workspace_id)
-            workspace_name = ws.get('content', {}).get('name', None)
-            current_capacity_id = ws.get('content', {}).get('capacityId', None)
+            current_capacity_id = ws.get("content", {}).get("capacityId", None)
 
             if current_capacity_id.lower() == capacity_id.lower():
-                return {'message': 'Workspace is already assigned to the specified capacity.'}
+                return {
+                    "message": "Workspace is already assigned to the specified capacity."
+                }
 
-            request_url = self.main_url + f'/groups/{workspace_id}/AssignToCapacity'
+            request_url = self.main_url + f"/groups/{workspace_id}/AssignToCapacity"
 
-            headers = {'Authorization': f'Bearer {self.token}'}
+            headers = {"Authorization": f"Bearer {self.token}"}
 
             # https://learn.microsoft.com/en-us/rest/api/power-bi/capacities/groups-assign-to-capacity
-            data = {
-                "capacityId": capacity_id
-            }
+            data = {"capacityId": capacity_id}
 
             # Make the request
             r = requests.post(url=request_url, headers=headers, json=data)
@@ -170,17 +168,24 @@ class Capacity:
 
             # If success...
             if status == 200:
-                return {'message': 'Success'}
-            
+                return {"message": "Success"}
+
             elif status == 401:
-                return {'message': 'Unauthorized. Please check your access level. Workspace administration rights are required to perform this action.'}
-            
-            else:                
+                return {
+                    "message": "Unauthorized. Please check your access level. Workspace administration rights are required to perform this action."
+                }
+
+            else:
                 # If any error happens, return message.
                 response = json.loads(r.content)
-                error_message = response['error']['code']
+                error_code = response.get("error", {}).get("code", "Unknown error")
 
-                return {'message': {'error': {'status': status, 'description': ''}, 'content': response.content}}
+                return {
+                    "message": {
+                        "error": {"status": status, "description": error_code},
+                        "content": response,
+                    }
+                }
 
         else:
-            return {'message': 'Missing parameters, please check.', 'content': ''}
+            return {"message": "Missing parameters, please check.", "content": ""}
