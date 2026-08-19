@@ -9,3 +9,17 @@ from .kql import KQLDatabase
 from .database import Database
 from .pipeline import Pipeline
 from .notebook import Notebook
+
+__all__ = [
+    "Workspace",
+    "Dataset",
+    "Report",
+    "Dataflow",
+    "Capacity",
+    "Admin",
+    "Operations",
+    "KQLDatabase",
+    "Database",
+    "Pipeline",
+    "Notebook",
+]
