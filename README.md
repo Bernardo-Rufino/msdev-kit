@@ -83,7 +83,14 @@ graph_auth  = Auth(tenant_id="...", client_id="spn-b", client_secret="...")
 
 ### Interactive user auth
 
-For scenarios requiring user context (e.g., RLS-enabled datasets):
+For scenarios requiring user context (e.g., RLS-enabled datasets), omit the client-secret arguments to use browser authentication by default:
+
+```python
+auth = Auth()
+token = auth.get_token('fabric')
+```
+
+You can also request a fresh user token from a service-principal `Auth` instance:
 
 ```python
 token = auth.get_token_for_user('pbi')     # opens browser for login
