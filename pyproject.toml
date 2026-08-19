@@ -1,7 +1,7 @@
 [project]
 name = "msdev-kit"
 description = "Microsoft developer toolkit: Fabric, MS Graph, and SharePoint"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}
@@ -23,6 +23,7 @@ dependencies = [
     "cryptography (>=48.0.1,<49.0.0)",
     "pydantic (>=2.13.4,<3.0.0)",
     "pyjwt (>=2.13.0,<3.0.0)",
+    "ipykernel (>=7.3.0,<8.0.0)",
 ]
 
 [project.urls]
@@ -36,6 +37,12 @@ packages = [{include = "msdev_kit"}]
 pythonpath = ["."]
 markers = [
     "integration: marks tests that require live Fabric API access (deselect with '-m \"not integration\"')",
+]
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "pytest-mock (>=3.15.1,<4.0.0)",
 ]
 
 [build-system]
