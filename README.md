@@ -342,7 +342,7 @@ sp.create_folder('/Reports/2026/Q1')
 | Method | Description |
 |---|---|
 | `download_file(file_path, local_dir)` | Download a file from the default document library. Returns local file path. |
-| `upload_file(remote_path, source, content_type?)` | Upload/overwrite a file. `source` is a local file path (str) or raw bytes. |
+| `upload_file(remote_path, source, content_type?)` | Upload/overwrite a file up to 250 MB. `source` is a local file path or raw bytes. |
 | `create_folder(folder_path)` | Create a folder and all intermediate folders. |
 
 Hostname and site path inputs are normalized automatically:
