@@ -10,6 +10,16 @@ Microsoft developer toolkit for Python: Fabric/Power BI, MS Graph (Entra), and S
 > history was squashed when the project was opened to the public, so commits
 > before that date are not preserved.
 
+## Supported OS
+
+- Windows x64
+- macOS Apple ARM
+- Linux
+
+### Unsupported OS
+
+- Currently, because of updates to `cryptography` package (`>=50.0.0`), `Windows 32-bit` and `macOS Intel` are not supported.
+
 ## Installation
 
 ```shell
