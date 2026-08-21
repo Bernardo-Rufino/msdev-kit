@@ -432,7 +432,6 @@ values and call their explicit helper only after reviewing the target IDs.
 
 ## Contributing
 
-Read [Development](docs/development.md) before opening a pull request. It covers
-local setup, example configuration, validation commands, branch conventions, and
-the release boundary. Keep PRs focused and add or update tests for behavior
-changes.
+Read [Contributing](CONTRIBUTING.md) before opening a pull request. It links the
+local setup, validation commands, issue and pull request process, branch
+conventions, and release boundary.

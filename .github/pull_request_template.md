@@ -1,19 +1,18 @@
 ## Summary
 
-<!-- Briefly describe what this PR does and why. -->
+<!-- State the user-visible change and why it is needed. -->
 
-## Changes
+## Validation
 
--
+<!-- List commands run and their results. -->
 
-## How to test
-
-<!-- Steps to verify the changes work as expected. -->
-
-1.
+- [ ] `python -m pytest tests/fabric tests/graph tests/sharepoint -v --tb=short`
+- [ ] `python -m compileall -q msdev_kit examples`
+- [ ] `python -m build`
 
 ## Checklist
 
-- [ ] Code builds successfully (`python -m build`)
-- [ ] Tests pass (`pytest tests/fabric/ tests/graph/ tests/sharepoint/ -v`)
-- [ ] Updated documentation (README, docstrings) if applicable
+- [ ] Scope is focused and linked issue is included when applicable.
+- [ ] Tests and documentation were updated when behavior changed.
+- [ ] Examples use placeholders and no secrets or customer data are included.
+- [ ] Migration, permissions, and breaking-change impact are documented when applicable.
