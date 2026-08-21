@@ -51,3 +51,10 @@ and any required permissions or migration steps. Link the issue when one exists.
 A maintainer reviews the change. Do not merge your own pull request unless you
 have explicit maintainer authorization. Package publication is maintainer-owned
 and is triggered only by qualifying changes merged to `main`.
+
+## Maintainer merge policy
+
+`main` accepts pull requests only. A change needs one code-owner approval, all
+review threads resolved, and passing `build`, `test`, and GitGuardian checks.
+Use squash merge to keep one focused change per pull request. Auto merge stays
+disabled because a qualifying merge can publish a package.
