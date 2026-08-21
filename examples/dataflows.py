@@ -1,30 +1,37 @@
-"""Dataflow examples: copy a dataflow to another workspace, change its data
-destination, and update downstream pipelines that referenced the old ID.
+"""Dataflow write examples.
+
+This module defines copy and destination replacement helpers. It deliberately
+performs no write when run directly. Use ``dataflow_destinations.py`` for a
+read-only workspace destination inventory.
 """
-
-import pandas as pd
-
-from examples._setup import build_clients
 
 
 def copy_dataflows(dataflow, source_workspace_id, destination_workspace_id, names):
-    dataflows = dataflow.list_dataflows(workspace_id=source_workspace_id).get("content", [])
-    to_copy = [d for d in dataflows if d.get("name") in names]
+    """Copy named dataflows to another workspace. This creates new items."""
+    result = dataflow.list_dataflows(workspace_id=source_workspace_id)
+    if result.get("message") != "Success":
+        raise RuntimeError(f"Unable to list dataflows: {result.get('message')}")
 
-    for d in to_copy:
+    to_copy = [item for item in result.get("content", []) if item.get("name") in names]
+    for item in to_copy:
+        dataflow_id = item.get("id") or item.get("objectId")
+        if not dataflow_id:
+            print(f"Skipped {item.get('name', '<unnamed>')}: missing dataflow ID")
+            continue
+
         details = dataflow.get_dataflow_details(
-            workspace_id=source_workspace_id, dataflow_id=d["objectId"]
+            workspace_id=source_workspace_id, dataflow_id=dataflow_id
         ).get("content", "")
         if not details:
+            print(f"Skipped {item['name']}: definition was not returned")
             continue
 
         details["entities"][0].pop("partitions", None)
         details["pbi:mashup"]["allowNativeQueries"] = False
-
-        result = dataflow.create_dataflow(
+        created = dataflow.create_dataflow(
             workspace_id=destination_workspace_id, dataflow_content=details
         )
-        print(f"Copied {d['name']}: {result}")
+        print(f"Copied {item['name']}: {created.get('message')}")
 
 
 def replace_destination_and_fix_pipelines(
@@ -35,7 +42,7 @@ def replace_destination_and_fix_pipelines(
     destination_workspace_id,
     destination_item_id,
 ):
-    # Step 1: change destination (replace mode produces a new dataflow ID)
+    """Replace a destination, then update pipeline references to the new ID."""
     result = dataflow.change_data_destination(
         workspace_id=workspace_id,
         dataflow_id=old_dataflow_id,
@@ -44,45 +51,25 @@ def replace_destination_and_fix_pipelines(
         destination_item_id=destination_item_id,
         mode="replace",
     )
-    if result["message"] != "Success":
-        print(f"Error: {result}")
-        return
-    new_dataflow_id = result["content"]["id"]
-    print(f"New dataflow ID: {new_dataflow_id}")
+    if result.get("message") != "Success":
+        raise RuntimeError(f"Destination replacement failed: {result}")
 
-    # Step 2: find pipelines still referencing the old dataflow
+    new_dataflow_id = result["content"]["id"]
     matches = pipeline.find_pipelines_by_dataflow(
         workspace_id=workspace_id, dataflow_id=old_dataflow_id
     )
-    if matches["message"] != "Success":
-        print(f"Error: {matches}")
-        return
-    print(f"Found {len(matches['content'])} pipeline(s) to update")
+    if matches.get("message") != "Success":
+        raise RuntimeError(f"Pipeline lookup failed: {matches}")
 
-    # Step 3: rewrite each pipeline
-    for m in matches["content"]:
-        r = pipeline.replace_dataflow_id_in_pipeline(
+    for item in matches.get("content", []):
+        updated = pipeline.replace_dataflow_id_in_pipeline(
             workspace_id=workspace_id,
-            pipeline_id=m["pipeline_id"],
+            pipeline_id=item["pipeline_id"],
             old_dataflow_id=old_dataflow_id,
             new_dataflow_id=new_dataflow_id,
         )
-        print(f"  {m['pipeline_name']}: {r['message']}")
-
-
-def list_destinations(dataflow, workspace_id, dataflow_id):
-    result = dataflow.get_data_destinations(workspace_id=workspace_id, dataflow_id=dataflow_id)
-    if result["message"] != "Success":
-        print(f"Error: {result}")
-        return None
-    return pd.DataFrame(result["content"])
+        print(f"{item['pipeline_name']}: {updated.get('message')}")
 
 
 if __name__ == "__main__":
-    clients = build_clients()
-    copy_dataflows(
-        clients["dataflow"],
-        source_workspace_id="123",
-        destination_workspace_id="456",
-        names=["dataflow1", "dataflow2"],
-    )
+    print("No write operation was run. Edit this file and call a helper with real IDs.")

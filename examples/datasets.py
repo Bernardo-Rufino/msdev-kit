@@ -1,36 +1,36 @@
-"""Dataset examples: list users with access, run a DAX query."""
+"""Dataset examples: list users with access and run a DAX query."""
 
 import pandas as pd
 
-from examples._setup import build_clients
+from examples._setup import build_powerbi_clients, require_configured_value
 
 
 def list_dataset_users(workspace, dataset, workspace_name, dataset_name):
     workspaces = workspace.list_workspaces().get("content", [])
-    workspace_id = next((w["id"] for w in workspaces if w["name"] == workspace_name), "")
+    workspace_id = next((item["id"] for item in workspaces if item["name"] == workspace_name), "")
     if not workspace_id:
         print(f"Workspace not found: {workspace_name}")
         return None
 
     datasets = dataset.list_datasets(workspace_id=workspace_id).get("content", [])
-    dataset_id = next((d["id"] for d in datasets if d["name"] == dataset_name), "")
+    dataset_id = next((item["id"] for item in datasets if item["name"] == dataset_name), "")
     if not dataset_id:
         print(f"Dataset not found: {dataset_name}")
         return None
 
     users = dataset.list_users(workspace_id=workspace_id, dataset_id=dataset_id)
-    df = pd.DataFrame(users["content"])
-    df["workspace"] = workspace_name
-    df["dataset"] = dataset_name
-    return df
+    dataframe = pd.DataFrame(users.get("content", []))
+    dataframe["workspace"] = workspace_name
+    dataframe["dataset"] = dataset_name
+    return dataframe
 
 
 def run_dax(dataset, workspace_id, dataset_id, query):
     result = dataset.execute_query(
         workspace_id=workspace_id, dataset_id=dataset_id, query=query
     )
-    if result["message"] != "Success":
-        print(f"Error: {result}")
+    if result.get("message") != "Success":
+        print(f"Error: {result.get('message')}")
         return None
 
     print(f"Rows returned: {result['rows_returned']}")
@@ -41,19 +41,11 @@ def run_dax(dataset, workspace_id, dataset_id, query):
 
 
 if __name__ == "__main__":
-    clients = build_clients()
-    workspace = clients["workspace"]
-    dataset = clients["dataset"]
-
-    df_users = list_dataset_users(workspace, dataset, "Test workspace", "Test dataset")
-    if df_users is not None:
-        print(df_users.head())
-
-    df_query = run_dax(
-        dataset,
-        workspace_id="your-workspace-id",
-        dataset_id="your-dataset-id",
-        query="EVALUATE SUMMARIZECOLUMNS('Table'[Column1], 'Table'[Column2])",
+    workspace_name = require_configured_value("<workspace-name>", "workspace_name")
+    dataset_name = require_configured_value("<semantic-model-name>", "dataset_name")
+    clients = build_powerbi_clients()
+    dataframe = list_dataset_users(
+        clients["workspace"], clients["dataset"], workspace_name, dataset_name
     )
-    if df_query is not None:
-        print(df_query.head())
+    if dataframe is not None:
+        print(dataframe.head())
