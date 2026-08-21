@@ -1,7 +1,7 @@
 [project]
 name = "msdev-kit"
 description = "Microsoft developer toolkit: Fabric, MS Graph, and SharePoint"
-version = "0.2.0"
+version = "0.2.3"
 requires-python = ">=3.10"
 readme = "README.md"
 license = {text = "MIT"}

@@ -8,6 +8,7 @@ from . import report
 from typing import Dict
 from .utilities import create_directory
 from concurrent.futures import ThreadPoolExecutor
+from msdev_kit.http import request_with_retry
 
 
 class Dataset:
@@ -28,21 +29,16 @@ class Dataset:
         self, method: str, url: str, max_retries: int = 3, **kwargs
     ) -> requests.Response:
         """
-        Makes an HTTP request with automatic retry on 429 (Too Many Requests).
-        Respects the Retry-After header when present.
+        Compatibility wrapper around the shared HTTP retry helper.
         """
-        for attempt in range(max_retries + 1):
-            response = requests.request(method, url, **kwargs)
-            if response.status_code != 429:
-                return response
-
-            retry_after = int(response.headers.get("Retry-After", 5))
-            print(
-                f"  Rate limited (429). Retrying in {retry_after}s... (attempt {attempt + 1}/{max_retries})"
-            )
-            time.sleep(retry_after)
-
-        return response
+        return request_with_retry(
+            method,
+            url,
+            max_retries=max_retries,
+            request_func=requests.request,
+            sleep=time.sleep,
+            **kwargs,
+        )
 
     def get_dataset_name(self, workspace_id: str, dataset_id: str) -> str:
         """

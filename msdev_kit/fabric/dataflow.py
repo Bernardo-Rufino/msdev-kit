@@ -7,8 +7,11 @@ import time
 import base64
 import requests
 import pandas as pd
-from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from typing import Callable, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict
+from msdev_kit.http import RequestPacer, request_with_retry
 from .utilities import create_directory
 from .workspace import Workspace
 
@@ -27,14 +30,17 @@ class ComputeEngineSettingsModel(BaseModel):
 class Dataflow:
 
     def __init__(self, token: str):
-        """
-        Initialize variables.
+        """Initialize the Dataflow client.
+
+        Args:
+            token: Power BI or Fabric bearer token.
         """
         self.main_url = 'https://api.powerbi.com/v1.0/myorg'
         self.fabric_api_base_url = 'https://api.fabric.microsoft.com'
         self.token = token
         self.headers = {'Authorization': f'Bearer {self.token}'}
         self.workspace = Workspace(self.token)
+        self._request_pacer = RequestPacer(requests_per_minute=200)
 
         # Directories
         self.dataflows_dir = './data/dataflows'
@@ -44,24 +50,38 @@ class Dataflow:
             create_directory(dir)
 
 
-    def _request_with_retry(self, method: str, url: str, max_retries: int = 3, **kwargs) -> requests.Response:
+    def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        max_retries: int = 3,
+        log_retries: bool = True,
+        on_rate_limit: Optional[Callable[[float], None]] = None,
+        **kwargs,
+    ) -> requests.Response:
         """
-        Makes an HTTP request with automatic retry on 429 (Too Many Requests).
-        Respects the Retry-After header when present.
+        Compatibility wrapper around the shared HTTP retry helper.
         """
-        for attempt in range(max_retries + 1):
-            response = requests.request(method, url, **kwargs)
-            if response.status_code != 429:
-                return response
+        return request_with_retry(
+            method,
+            url,
+            max_retries=max_retries,
+            pacer=getattr(self, '_request_pacer', None),
+            request_func=requests.request,
+            sleep=time.sleep,
+            log_retries=log_retries,
+            on_rate_limit=on_rate_limit,
+            **kwargs,
+        )
 
-            retry_after = int(response.headers.get('Retry-After', 5))
-            print(f"  Rate limited (429). Retrying in {retry_after}s... (attempt {attempt + 1}/{max_retries})")
-            time.sleep(retry_after)
 
-        return response
-
-
-    def _get_dataflow_pbi_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
+    def _get_dataflow_pbi_definition(
+        self,
+        workspace_id: str,
+        dataflow_id: str,
+        log_retries: bool = True,
+        on_rate_limit: Optional[Callable[[float], None]] = None,
+    ) -> Dict:
         """
         Fetches a dataflow definition from the Power BI REST API.
         Works for Gen1 and Gen2 (standard) dataflows.
@@ -80,7 +100,13 @@ class Dataflow:
             return {'message': 'Missing dataflow id, please check.', 'content': ''}
 
         request_url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}'
-        r = self._request_with_retry('GET', request_url, headers=self.headers)
+        r = self._request_with_retry(
+            'GET',
+            request_url,
+            headers=self.headers,
+            log_retries=log_retries,
+            on_rate_limit=on_rate_limit,
+        )
 
         if r.status_code == 200:
             return {'message': 'Success', 'content': json.loads(r.content)}
@@ -166,6 +192,10 @@ class Dataflow:
             if not fabric_df.empty:
                 fabric_df['name'] = fabric_df['displayName']
                 fabric_df.drop(columns=['displayName'], inplace=True)
+                if 'generation' not in fabric_df.columns:
+                    fabric_df['generation'] = 2.1
+                else:
+                    fabric_df['generation'] = fabric_df['generation'].fillna(2.1)
                 fabric_df['source'] = 'fabric'
                 fabric_records = fabric_df.to_dict('records')
 
@@ -371,7 +401,13 @@ class Dataflow:
 
         return {'message': 'Success', 'content': response}
 
-    def get_dataflow_gen2_definition(self, workspace_id: str, dataflow_id: str) -> Dict:
+    def get_dataflow_gen2_definition(
+        self,
+        workspace_id: str,
+        dataflow_id: str,
+        verbose: bool = True,
+        on_rate_limit: Optional[Callable[[float], None]] = None,
+    ) -> Dict:
         """
         Gets the definition of a Dataflow Gen2 (CI/CD) from a specified workspace.
         Only Dataflow Gen2 (CI/CD / native Fabric) items support definition export.
@@ -380,18 +416,27 @@ class Dataflow:
         Args:
             workspace_id (str): The ID of the workspace where the Dataflow Gen2 resides.
             dataflow_id (str): The ID of the Dataflow Gen2 to retrieve the definition for.
+            verbose (bool): Print per-dataflow progress. Defaults to True.
 
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the Dataflow Gen2 definition content.
         """
         api_url = f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}/dataflows/{dataflow_id}/getDefinition'
 
-        print(f"Extracting definition for dataflow {dataflow_id} from workspace {workspace_id}...")
-        response = requests.post(api_url, headers=self.headers)
+        if verbose:
+            print(f"Extracting definition for dataflow {dataflow_id} from workspace {workspace_id}...")
+        response = self._request_with_retry(
+            'POST',
+            api_url,
+            headers=self.headers,
+            log_retries=verbose,
+            on_rate_limit=on_rate_limit,
+        )
 
         if response.status_code == 200:
             definition = response.json()
-            print("Successfully extracted Dataflow Gen2 definition.")
+            if verbose:
+                print("Successfully extracted Dataflow Gen2 definition.")
             return {'message': 'Success', 'content': definition}
         else:
             # getDefinition only works for Dataflow Gen2 (CI/CD / native Fabric).
@@ -410,7 +455,8 @@ class Dataflow:
                 }
 
             error_message = response.text
-            print(f"Error getting Dataflow Gen2 definition: {response.status_code} - {error_message}")
+            if verbose:
+                print(f"Error getting Dataflow Gen2 definition: {response.status_code} - {error_message}")
             return {'message': {'error': error_message, 'status_code': response.status_code}}
         
 
@@ -1141,7 +1187,14 @@ class Dataflow:
         return new_m_code, metadata
 
 
-    def get_data_destinations(self, workspace_id: str, dataflow_id: str) -> Dict:
+    def get_data_destinations(
+        self,
+        workspace_id: str,
+        dataflow_id: str,
+        source: Optional[str] = None,
+        verbose: bool = True,
+        on_rate_limit: Optional[Callable[[float], None]] = None,
+    ) -> Dict:
         """
         Gets the data destination details for each table in a dataflow.
 
@@ -1152,10 +1205,14 @@ class Dataflow:
         Args:
             workspace_id: The workspace ID where the dataflow resides.
             dataflow_id: The dataflow ID.
+            source: Source returned by :meth:`list_dataflows`. Uses the known
+                API route directly when it is ``pbi`` or ``fabric``.
+            verbose: Print definition extraction progress. Defaults to True.
+            on_rate_limit: Called with the retry delay for each HTTP 429.
 
         Returns:
             Dict: 'message' and 'content' (list of dicts with keys:
-                table, destination_type, workspace_id, item_id, sql_schema,
+                name, destination_type, workspace_id, item_id, sql_schema,
                 mapping_type ('Automatic' or 'Manual'),
                 columns (list of {source, destination} dicts, empty for automatic mappings)).
         """
@@ -1164,18 +1221,176 @@ class Dataflow:
         if dataflow_id == '':
             return {'message': 'Missing dataflow id, please check.', 'content': ''}
 
-        # Try CI/CD format first
-        cicd_result = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
-        is_cicd = cicd_result.get('message') == 'Success'
+        cicd_result = None
+        if source != 'pbi':
+            cicd_result = self.get_dataflow_gen2_definition(
+                workspace_id,
+                dataflow_id,
+                verbose=verbose,
+                on_rate_limit=on_rate_limit,
+            )
+            if cicd_result.get('message') == 'Success':
+                return self._get_data_destinations_cicd(cicd_result['content'])
+            if source == 'fabric':
+                return {
+                    'message': f'Failed to fetch Dataflow Gen2 definition: {cicd_result.get("message")}',
+                    'content': '',
+                }
 
-        if is_cicd:
-            return self._get_data_destinations_cicd(cicd_result['content'])
-        else:
-            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
-            if pbi_result.get('message') == 'Success':
-                return self._get_data_destinations_standard(pbi_result['content'])
+        pbi_result = self._get_dataflow_pbi_definition(
+            workspace_id,
+            dataflow_id,
+            log_retries=verbose,
+            on_rate_limit=on_rate_limit,
+        )
+        if pbi_result.get('message') == 'Success':
+            return self._get_data_destinations_standard(pbi_result['content'])
+
+        cicd_message = cicd_result.get('message') if cicd_result else 'not attempted'
+        return {
+            'message': (
+                'Failed to fetch dataflow definition. '
+                f'CI/CD: {cicd_message}. PBI: {pbi_result.get("message")}'
+            ),
+            'content': '',
+        }
+
+
+    def get_workspace_data_destinations(
+        self,
+        workspace_id: str,
+        max_workers: int = 4,
+    ) -> Dict:
+        """Get destination tables for every dataflow in a workspace.
+
+        Uses :meth:`list_dataflows` as the source of truth for the workspace,
+        then obtains each dataflow's destinations concurrently. Requests share
+        the hardcoded 200 requests-per-minute pace and retry 429 responses, so
+        increasing ``max_workers`` does not bypass API throttling.
+
+        Args:
+            workspace_id: The workspace ID to inventory.
+            max_workers: Maximum concurrent definition lookups. Defaults to 4.
+
+        Returns:
+            Dict with ``content`` containing one item per dataflow. Each item
+            has the source ``dataflow`` record, ``tables`` with destination
+            details, and ``error`` when that dataflow could not be inspected.
+            The message is ``Success`` when all dataflows were inspected or
+            ``Partial success`` when one or more definition lookups failed.
+        """
+        if workspace_id == '':
+            return {'message': 'Missing workspace id, please check.', 'content': ''}
+        if max_workers < 1:
+            return {'message': 'max_workers must be at least 1.', 'content': ''}
+
+        dataflows_result = self.list_dataflows(workspace_id)
+        if dataflows_result.get('message') != 'Success':
+            return {
+                'message': dataflows_result.get('message'),
+                'content': [],
+            }
+
+        dataflows = dataflows_result.get('content', [])
+        results = [None] * len(dataflows)
+        progress_lock = Lock()
+        progress = {'completed': 0}
+
+        def report_rate_limit(_retry_delay: float) -> None:
+            with progress_lock:
+                print(
+                    f'\n{progress["completed"]} processados até então, '
+                    'aguardando rate limit...',
+                    flush=True,
+                )
+
+        def inspect_dataflow(index: int, dataflow: Dict) -> tuple[int, Dict]:
+            dataflow_id = dataflow.get('id') or dataflow.get('objectId')
+            result = {
+                'dataflow': dataflow,
+                'tables': [],
+            }
+            if not dataflow_id:
+                result['error'] = 'Dataflow record has no id.'
+                return index, result
+
+            try:
+                destinations_result = self.get_data_destinations(
+                    workspace_id,
+                    dataflow_id,
+                    source=dataflow.get('source'),
+                    verbose=False,
+                    on_rate_limit=report_rate_limit,
+                )
+            except Exception as error:
+                result['error'] = str(error)
+                return index, result
+
+            if destinations_result.get('message') == 'Success':
+                result['tables'] = destinations_result.get('content', [])
             else:
-                return {'message': f'Failed to fetch dataflow definition. CI/CD: {cicd_result.get("message")}. PBI: {pbi_result.get("message")}', 'content': ''}
+                result['error'] = destinations_result.get('message')
+            return index, result
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(inspect_dataflow, index, dataflow)
+                for index, dataflow in enumerate(dataflows)
+            ]
+            for completed, future in enumerate(as_completed(futures), start=1):
+                index, result = future.result()
+                results[index] = result
+                with progress_lock:
+                    progress['completed'] = completed
+                    print(
+                        f'\rExtracted definition from {completed}/{len(dataflows)} '
+                        f'dataflows from workspace {workspace_id}...',
+                        end='',
+                        flush=True,
+                    )
+
+        if dataflows:
+            print()
+
+        self._export_workspace_dataflow_destinations(workspace_id, results)
+        failed = [result for result in results if result.get('error')]
+        return {
+            'message': 'Partial success' if failed else 'Success',
+            'content': results,
+        }
+
+
+    def _export_workspace_dataflow_destinations(
+        self,
+        workspace_id: str,
+        dataflows: List[Dict],
+    ) -> pd.DataFrame:
+        """Flatten workspace destination results and save them to Excel."""
+        metadata = [
+            ['dataflow', 'id'],
+            ['dataflow', 'name'],
+            ['dataflow', 'configuredBy'],
+            ['dataflow', 'generation'],
+            ['dataflow', 'source'],
+        ]
+        dataframe = pd.json_normalize(
+            dataflows,
+            record_path=['tables'],
+            meta=metadata,
+            record_prefix='table_',
+            errors='ignore',
+        )
+        dataframe.columns = [column.replace('.', '_') for column in dataframe.columns]
+        dataflow_columns = [
+            column for column in dataframe.columns if column.startswith('dataflow_')
+        ]
+        destination_columns = [
+            column for column in dataframe.columns if not column.startswith('dataflow_')
+        ]
+        dataframe = dataframe[dataflow_columns + destination_columns]
+        filename = f'workspace_dataflow_destinations_{workspace_id}.xlsx'
+        dataframe.to_excel(os.path.join(self.dataflows_dir, filename), index=False)
+        return dataframe
 
 
     def _parse_column_mappings(self, annotation: str) -> List[Dict]:
@@ -1235,7 +1450,7 @@ class Dataflow:
             lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
             for q in data_queries:
                 destinations.append({
-                    'table': q['name'],
+                    'name': q['name'],
                     'destination_type': 'Lakehouse',
                     'workspace_id': ws_match.group(1) if ws_match else '',
                     'item_id': lh_match.group(1) if lh_match else '',
@@ -1260,7 +1475,7 @@ class Dataflow:
                 if 'Lakehouse.Contents' in body:
                     lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
                     destinations.append({
-                        'table': q['name'],
+                        'name': q['name'],
                         'destination_type': 'Lakehouse',
                         'workspace_id': ws_match.group(1) if ws_match else '',
                         'item_id': lh_match.group(1) if lh_match else '',
@@ -1271,7 +1486,7 @@ class Dataflow:
                 elif 'Fabric.Warehouse' in body:
                     wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
                     destinations.append({
-                        'table': q['name'],
+                        'name': q['name'],
                         'destination_type': 'Warehouse',
                         'workspace_id': ws_match.group(1) if ws_match else '',
                         'item_id': wh_match.group(1) if wh_match else '',
@@ -1312,7 +1527,7 @@ class Dataflow:
             if 'Lakehouse.Contents' in body:
                 lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
                 destinations.append({
-                    'table': table_name,
+                    'name': table_name,
                     'destination_type': 'Lakehouse',
                     'workspace_id': ws_match.group(1) if ws_match else '',
                     'item_id': lh_match.group(1) if lh_match else '',
@@ -1323,7 +1538,7 @@ class Dataflow:
             elif 'Fabric.Warehouse' in body:
                 wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
                 destinations.append({
-                    'table': table_name,
+                    'name': table_name,
                     'destination_type': 'Warehouse',
                     'workspace_id': ws_match.group(1) if ws_match else '',
                     'item_id': wh_match.group(1) if wh_match else '',
@@ -1343,7 +1558,7 @@ class Dataflow:
                 bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
                 for bind_match in re.finditer(bind_pattern, m_code):
                     destinations.append({
-                        'table': bind_match.group(1),
+                        'name': bind_match.group(1),
                         'destination_type': 'Lakehouse',
                         'workspace_id': ws_match.group(1) if ws_match else '',
                         'item_id': lh_match.group(1) if lh_match else '',
