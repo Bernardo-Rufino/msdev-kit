@@ -1,53 +1,61 @@
-"""Workspace examples: list workspaces, bulk-add and bulk-remove users."""
+"""Workspace examples.
+
+Running this module only lists the workspaces visible to the configured app.
+The bulk membership helpers write to every supplied workspace, so call them
+only after reviewing the list and setting real values in your own script.
+"""
 
 import pandas as pd
 
-from examples._setup import build_clients
+from examples._setup import build_powerbi_clients
 
 
 def list_workspaces(workspace):
-    workspaces = workspace.list_workspaces()
-    workspaces_list = workspaces.get("content", [])
+    """Return the workspaces visible to the configured service principal."""
+    result = workspace.list_workspaces()
+    if result.get("message") != "Success":
+        raise RuntimeError(f"Unable to list workspaces: {result.get('message')}")
 
-    df = pd.DataFrame(workspaces_list).sort_values(by="name").reset_index(drop=True)
-    print(f"Found {len(df)} workspaces")
-    return workspaces_list, df
+    workspaces = result.get("content", [])
+    dataframe = pd.DataFrame(workspaces)
+    if not dataframe.empty and "name" in dataframe:
+        dataframe = dataframe.sort_values(by="name").reset_index(drop=True)
+    print(f"Found {len(dataframe)} workspaces")
+    return workspaces, dataframe
 
 
-def add_user_to_all(workspace, workspaces_list, user_principal_name, role):
-    for w in workspaces_list:
+def add_user_to_all(workspace, workspaces, user_principal_name, role):
+    """Write example. Add or update one user in every supplied workspace."""
+    for item in workspaces:
         try:
             response = workspace.add_user(
                 user_principal_name=user_principal_name,
                 access_right=role,
-                workspace_id=w["id"],
+                workspace_id=item["id"],
             )
-            if response["message"] != "Success":
+            if response.get("message") != "Success":
                 workspace.update_user(
                     user_principal_name=user_principal_name,
                     access_right=role,
-                    workspace_id=w["id"],
+                    workspace_id=item["id"],
                 )
-        except Exception as e:
-            print(f"Error on workspace {w['name']} ({w['id']}): {e}")
+        except Exception as error:
+            print(f"Error on workspace {item['name']} ({item['id']}): {error}")
 
 
-def remove_user_from_all(workspace, workspaces_list, user_principal_name):
-    for w in workspaces_list:
+def remove_user_from_all(workspace, workspaces, user_principal_name):
+    """Write example. Remove one user from every supplied workspace."""
+    for item in workspaces:
         try:
             workspace.remove_user(
-                user_principal_name=user_principal_name, workspace_id=w["id"]
+                user_principal_name=user_principal_name, workspace_id=item["id"]
             )
-            print(f"Removed {user_principal_name} from {w['name']}")
-        except Exception as e:
-            print(f"Error on workspace {w['name']} ({w['id']}): {e}")
+            print(f"Removed {user_principal_name} from {item['name']}")
+        except Exception as error:
+            print(f"Error on workspace {item['name']} ({item['id']}): {error}")
 
 
 if __name__ == "__main__":
-    clients = build_clients()
-    workspace = clients["workspace"]
-
-    workspaces_list, _ = list_workspaces(workspace)
-
-    add_user_to_all(workspace, workspaces_list, "test@test.com", "Member")
-    remove_user_from_all(workspace, workspaces_list, "test@test.com")
+    clients = build_powerbi_clients()
+    _, dataframe = list_workspaces(clients["workspace"])
+    print(dataframe.head(20).to_string(index=False))

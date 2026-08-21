@@ -32,15 +32,11 @@ Or install from GitHub:
 pip install git+https://github.com/Bernardo-Rufino/msdev-kit.git
 ```
 
-For local development:
+For local development, use the repository instructions in [Development](docs/development.md).
 
-```shell
-git clone https://github.com/Bernardo-Rufino/msdev-kit.git
-cd msdev-kit
-pip install -e .
-```
-
-**Requirements:** Python >= 3.10, an Azure app registration with a client ID and client secret.
+**Requirements:** Python >= 3.10. Service principal authentication requires an
+Azure app registration, tenant ID, client ID, and client secret. Interactive
+user authentication is also supported for APIs that permit it.
 
 ---
 
@@ -56,7 +52,7 @@ from msdev_kit.sharepoint import SharePointClient
 auth = Auth(tenant_id="...", client_id="...", client_secret="...")
 
 # fabric: list workspaces
-ws = Workspace(auth.get_token('fabric'))
+ws = Workspace(auth.get_token('pbi'))
 workspaces = ws.list_workspaces_for_user()
 
 # graph: look up a user
@@ -72,7 +68,10 @@ sp.download_file('/Reports/monthly.xlsx', local_dir='./downloads')
 
 ## Authentication
 
-All classes use a shared `Auth` object. You can use different service principals for different services — instantiate one `Auth` per SPN:
+`Auth` owns token acquisition. Fabric and Power BI classes receive a token string,
+while Graph and SharePoint clients receive the `Auth` instance. You can use
+different service principals for different services by instantiating one `Auth`
+per service principal:
 
 ```python
 from msdev_kit import Auth
@@ -109,13 +108,15 @@ token = auth.get_token_for_user('fabric')
 
 ### Credentials
 
-Set up credentials via environment variables or a `.env` file:
+For the bundled examples, copy the template and set the values:
 
 ```shell
-TENANT_ID='<YOUR_TENANT_ID>'
-CLIENT_ID='<YOUR_CLIENT_ID>'
-CLIENT_SECRET='<YOUR_CLIENT_SECRET>'
+cp .env.example .env
 ```
+
+`msdev-kit` does not load `.env` automatically. The scripts in `examples/` load
+`.env` from the repository root. Applications may pass values directly to
+`Auth`, or load environment variables with their own configuration mechanism.
 
 ---
 
@@ -206,7 +207,7 @@ pages = rpt.list_report_pages(workspace_id, report_id)
 Manage Power BI and Fabric dataflows, including Gen1, Gen2, and Gen2 CI/CD.
 
 ```python
-df = Dataflow(auth.get_token('fabric'))
+df = Dataflow(auth.get_token('pbi'))
 
 # upgrade Gen1 to Gen2 CI/CD
 result = df.upgrade_to_gen2_cicd(
@@ -229,10 +230,32 @@ result = df.upgrade_to_gen2_cicd(
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
 | `get_data_destinations(workspace_id, dataflow_id)` | Get data destination details for each table in a dataflow. |
-| `get_workspace_data_destinations(workspace_id, max_workers=4)` | Concurrently inventory every dataflow's destination tables and save a flattened workbook under `data/dataflows`. Requests are paced and retry 429 responses. |
+| `get_workspace_data_destinations(workspace_id, max_workers=4)` | Inspect every dataflow, return its destination details, and save destination-only rows as a workbook under `data/dataflows`. The inventory is paced at 200 requests per minute and retries 429 responses. |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, ...)` | Change data destination (Lakehouse/Warehouse). Modes: `preview`, `replace`, `create`. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, ...)` | Create a new Gen2 CI/CD dataflow with a different data destination. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. |
+
+#### Inventory workspace data destinations
+
+```python
+from msdev_kit import Auth
+from msdev_kit.fabric import Dataflow
+
+workspace_id = "<workspace-id>"
+auth = Auth(tenant_id="<tenant-id>", client_id="<client-id>", client_secret="<client-secret>")
+dataflow = Dataflow(auth.get_token("pbi"))
+
+result = dataflow.get_workspace_data_destinations(workspace_id, max_workers=4)
+```
+
+The method inspects every dataflow so `result["content"]` also records empty
+inspections and failures. Its workbook contains only table rows with a real data
+destination. Table name is exported as `table_name`, not `table_table`. A Fabric
+source without an API generation value is normalized to `2.1`. The progress line
+is updated in place. If a 429 response occurs, the method prints the completed
+count, waits, then resumes the progress line. See
+[`examples/dataflow_destinations.py`](examples/dataflow_destinations.py) for a
+DataFrame normalizer and a runnable placeholder.
 
 ### Pipeline
 
@@ -378,7 +401,7 @@ Hostname and site path inputs are normalized automatically:
 
 ## Limitations
 
-- The Power BI REST API has a **200 requests per hour** rate limit.
+- Power BI and Fabric endpoints apply operation-specific throttling. Do not assume one global quota. `get_workspace_data_destinations` intentionally paces definition lookups at 200 requests per minute and backs off after HTTP 429.
 - Not all users can be updated via the API. See Microsoft docs: [Dataset permissions](https://learn.microsoft.com/en-us/power-bi/developer/embedded/datasets-permissions#get-and-update-dataset-permissions-with-apis).
 - **Dataset query limits** (executeQueries API):
   - Max **100,000 rows** or **1,000,000 values** (rows x columns) per query, whichever is hit first.
@@ -392,27 +415,24 @@ Hostname and site path inputs are normalized automatically:
 
 ## Examples
 
-End-to-end scripts for the most common scenarios live in [`examples/`](./examples).
-They share a small `_setup.py` that builds Auth and the service clients from
-environment variables (or `./utils/.env`). Run any of them from the repo root:
+Runnable, placeholder-based scripts live in [`examples/`](./examples). Start
+with the [examples guide](examples/README.md), then run a read-only example from
+the repository root:
 
 ```bash
+cp .env.example .env
 python -m examples.workspaces
-python -m examples.dataflows
+python -m examples.dataflow_destinations
 ```
+
+Write examples never perform a mutation when run directly. Edit the placeholder
+values and call their explicit helper only after reviewing the target IDs.
 
 ---
 
 ## Contributing
 
-External contributions are welcome via pull requests. Please:
-
-1. Open an issue first for non-trivial changes so the design can be discussed.
-2. Use `feature/<name>` / `fix/<name>` branches. Direct pushes to `main` are
-   blocked by repository rulesets.
-3. Keep PRs focused. Add or update tests under `tests/` for any behavior change.
-4. Run `pytest` locally before opening a PR; the `Collaboration` workflow runs
-   the same suite on every PR and must pass before merging.
-
-PyPI releases are published automatically from `main` by the `Publish to PyPI`
-workflow, gated by a manual approval on the `pypi` environment.
+Read [Development](docs/development.md) before opening a pull request. It covers
+local setup, example configuration, validation commands, branch conventions, and
+the release boundary. Keep PRs focused and add or update tests for behavior
+changes.
