@@ -26,14 +26,14 @@ def graph(auth):
 
 class TestGetUserId:
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_found_by_upn(self, mock_get, graph):
         mock_get.return_value = MagicMock(status_code=200)
         mock_get.return_value.json.return_value = {'id': 'user-123'}
 
         assert graph.get_user_id('user@company.com') == 'user-123'
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_404_falls_back_to_mail_found(self, mock_get, graph):
         not_found = MagicMock(status_code=404)
         found = MagicMock(status_code=200)
@@ -42,7 +42,7 @@ class TestGetUserId:
 
         assert graph.get_user_id('user@company.com') == 'user-456'
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_not_found_returns_none(self, mock_get, graph):
         not_found = MagicMock(status_code=404)
         empty = MagicMock(status_code=200)
@@ -58,19 +58,32 @@ class TestGetUserId:
 
 class TestGetGroupId:
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_found(self, mock_get, graph):
         mock_get.return_value = MagicMock(status_code=200)
         mock_get.return_value.json.return_value = {'value': [{'id': 'grp-abc'}]}
 
         assert graph.get_group_id('Data Team') == 'grp-abc'
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_not_found_returns_none(self, mock_get, graph):
         mock_get.return_value = MagicMock(status_code=200)
         mock_get.return_value.json.return_value = {'value': []}
 
         assert graph.get_group_id('Ghost Group') is None
+
+    @patch('msdev_kit.http.time.sleep')
+    @patch('msdev_kit.graph.client.requests.request')
+    def test_retries_rate_limited_request(self, mock_request, mock_sleep, graph):
+        rate_limited = MagicMock(status_code=429, headers={'Retry-After': '1'})
+        success = MagicMock(status_code=200)
+        success.json.return_value = {'value': [{'id': 'grp-abc'}]}
+        mock_request.side_effect = [rate_limited, success]
+
+        assert graph.get_group_id('Data Team') == 'grp-abc'
+        assert mock_request.call_count == 2
+        assert mock_request.call_args_list[0].args[0] == 'GET'
+        mock_sleep.assert_called_once_with(1)
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +92,7 @@ class TestGetGroupId:
 
 class TestListGroupMembers:
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_single_page(self, mock_get, graph):
         page = MagicMock(status_code=200)
         page.json.return_value = {
@@ -92,7 +105,7 @@ class TestListGroupMembers:
         assert len(members) == 1
         assert members[0]['id'] == 'u1'
 
-    @patch('msdev_kit.graph.client.requests.get')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_pagination(self, mock_get, graph):
         page1 = MagicMock(status_code=200)
         page1.json.return_value = {
@@ -115,13 +128,13 @@ class TestListGroupMembers:
 
 class TestAddGroupMember:
 
-    @patch('msdev_kit.graph.client.requests.post')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_success(self, mock_post, graph):
         mock_post.return_value = MagicMock(status_code=204)
         graph.add_group_member('grp-abc', 'user-123')
         mock_post.assert_called_once()
 
-    @patch('msdev_kit.graph.client.requests.post')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_already_member_silently_ignored(self, mock_post, graph):
         mock_post.return_value = MagicMock(
             status_code=400,
@@ -137,18 +150,18 @@ class TestAddGroupMember:
 
 class TestRemoveGroupMember:
 
-    @patch('msdev_kit.graph.client.requests.delete')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_success(self, mock_delete, graph):
         mock_delete.return_value = MagicMock(status_code=204)
         graph.remove_group_member('grp-abc', 'user-123')
         mock_delete.assert_called_once()
 
-    @patch('msdev_kit.graph.client.requests.delete')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_404_silently_ignored(self, mock_delete, graph):
         mock_delete.return_value = MagicMock(status_code=404)
         graph.remove_group_member('grp-abc', 'user-123')  # must not raise
 
-    @patch('msdev_kit.graph.client.requests.delete')
+    @patch('msdev_kit.graph.client.requests.request')
     def test_403_silently_ignored(self, mock_delete, graph):
         mock_delete.return_value = MagicMock(status_code=403)
         graph.remove_group_member('grp-abc', 'user-123')  # must not raise

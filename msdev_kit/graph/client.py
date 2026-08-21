@@ -1,6 +1,7 @@
 import requests
 from typing import Optional
 from msdev_kit.auth import Auth
+from msdev_kit.http import request_with_retry
 
 
 class GraphClient:
@@ -15,10 +16,20 @@ class GraphClient:
             'Content-Type': 'application/json',
         }
 
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
+        """Send a Graph request through the shared retry implementation."""
+        return request_with_retry(
+            method,
+            url,
+            request_func=requests.request,
+            **kwargs,
+        )
+
     def get_user_id(self, email: str) -> Optional[str]:
         """Return the Entra object ID of a user by UPN/email, or None if not found.
         Falls back to filtering by the mail field when the UPN lookup returns 404."""
-        resp = requests.get(
+        resp = self._request(
+            'GET',
             f'{self._GRAPH_BASE}/users/{email}',
             headers=self._headers(),
             params={'$select': 'id'},
@@ -28,7 +39,8 @@ class GraphClient:
             resp.raise_for_status()
             return resp.json().get('id')
 
-        resp = requests.get(
+        resp = self._request(
+            'GET',
             f'{self._GRAPH_BASE}/users',
             headers=self._headers(),
             params={'$filter': f"mail eq '{email}'", '$select': 'id'},
@@ -40,7 +52,8 @@ class GraphClient:
 
     def get_group_id(self, group_name: str) -> Optional[str]:
         """Return the Entra object ID of a security group by displayName, or None."""
-        resp = requests.get(
+        resp = self._request(
+            'GET',
             f'{self._GRAPH_BASE}/groups',
             headers=self._headers(),
             params={'$filter': f"displayName eq '{group_name}'", '$select': 'id,displayName'},
@@ -58,7 +71,7 @@ class GraphClient:
         params = {'$select': 'id,displayName,mail,userPrincipalName', '$top': '999'}
 
         while url:
-            resp = requests.get(url, headers=self._headers(), params=params, timeout=30)
+            resp = self._request('GET', url, headers=self._headers(), params=params, timeout=30)
             resp.raise_for_status()
             data = resp.json()
             members.extend(data.get('value', []))
@@ -69,7 +82,8 @@ class GraphClient:
 
     def add_group_member(self, group_id: str, user_id: str):
         """Add user to group. Silently ignores 'already a member' errors."""
-        resp = requests.post(
+        resp = self._request(
+            'POST',
             f'{self._GRAPH_BASE}/groups/{group_id}/members/$ref',
             headers=self._headers(),
             json={'@odata.id': f'{self._GRAPH_BASE}/directoryObjects/{user_id}'},
@@ -81,7 +95,8 @@ class GraphClient:
 
     def remove_group_member(self, group_id: str, user_id: str):
         """Remove user from group. Silently ignores 404 (not a member) and 403 (insufficient privileges)."""
-        resp = requests.delete(
+        resp = self._request(
+            'DELETE',
             f'{self._GRAPH_BASE}/groups/{group_id}/members/{user_id}/$ref',
             headers=self._headers(),
             timeout=30,

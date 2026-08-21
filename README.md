@@ -229,6 +229,7 @@ result = df.upgrade_to_gen2_cicd(
 | `create_dataflow_gen2_from_definition(workspace_id, display_name, definition)` | Create a Dataflow Gen2 CI/CD from a definition. |
 | `update_dataflow_gen2_from_definition(workspace_id, dataflow_id, display_name, definition)` | Update an existing Dataflow Gen2 CI/CD definition. |
 | `get_data_destinations(workspace_id, dataflow_id)` | Get data destination details for each table in a dataflow. |
+| `get_workspace_data_destinations(workspace_id, max_workers=4)` | Concurrently inventory every dataflow's destination tables and save a flattened workbook under `data/dataflows`. Requests are paced and retry 429 responses. |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, ...)` | Change data destination (Lakehouse/Warehouse). Modes: `preview`, `replace`, `create`. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, ...)` | Create a new Gen2 CI/CD dataflow with a different data destination. |
 | `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. |
