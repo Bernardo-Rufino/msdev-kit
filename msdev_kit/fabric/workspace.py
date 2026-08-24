@@ -301,22 +301,33 @@ class Workspace:
 
                 return {"message": {"error": error_message, "content": response}}
 
+    @staticmethod
+    def _workspace_user_payload(
+        user_principal_name: str, access_right: str, user_type: str
+    ) -> Dict:
+        """Build the documented request body for a User, Group, or App principal."""
+        return {
+            "identifier": user_principal_name,
+            "groupUserAccessRight": access_right,
+            "principalType": user_type,
+        }
+
     def add_user(
         self,
         user_principal_name: str = "",
         workspace_id: str = "",
         access_right: str = "Viewer",
-        user_type: str = "user",
+        user_type: str = "User",
     ) -> Dict:
         """
-        Function to add a user to a workspace.
-        Service Principals can also be added to a workspace using the parameter user_type='SP'
+        Add or update a principal in a workspace.
 
         Args:
-            user_principal_name (str): user e-mail or identifier of service principal
-            workspace_id (str): workspace id to add the user
+            user_principal_name (str): identifier of the user, security group, or app.
+            workspace_id (str): workspace id to add the principal to.
             access_right (str, optional): access right type. Defaults to 'Viewer'.
-            user_type (str, optional): user type, SP for service accounts. Defaults to 'user'.
+            user_type (str, optional): principal type, User, Group, or App.
+                Defaults to 'User'.
 
         Returns:
             Dict: status message
@@ -324,8 +335,12 @@ class Workspace:
         if user_principal_name == "" or workspace_id == "":
             return {"message": "Missing parameters, please check."}
 
+        if user_type not in {"User", "Group", "App"}:
+            return {"message": "Invalid user_type. Expected User, Group, or App."}
+
         print(
-            f"Adding user {user_principal_name} to workspace {workspace_id} as {access_right}..."
+            f"Adding principal {user_principal_name} to workspace {workspace_id} "
+            f"as {access_right}..."
         )
 
         # Check if user already exists
@@ -336,68 +351,55 @@ class Workspace:
                 "content": current_users,
             }
 
-        user_role_map = {"Admin": 4, "Member": 3, "Contributor": 2, "Viewer": 1}
-
-        current_role = ""
+        existing_user = None
         for user in current_users["content"]:
-            if (
-                user_type == "SP"
-                and user.get("identifier", "").lower() == user_principal_name.lower()
-            ) or (
-                user_type != "SP"
-                and user.get("emailAddress", "").lower() == user_principal_name.lower()
+            if user.get("principalType") != user_type:
+                continue
+
+            identifiers = [user.get("identifier", "")]
+            if user_type == "User":
+                identifiers.append(user.get("emailAddress", ""))
+
+            if any(
+                identifier.lower() == user_principal_name.lower()
+                for identifier in identifiers
+                if identifier
             ):
-                current_role = user.get("groupUserAccessRight", "")
+                existing_user = user
                 break
 
-        desired_level = user_role_map.get(access_right, 0)
-        current_level = user_role_map.get(current_role, 0)
-
-        if current_level > 0:
-            if current_level < desired_level:
-                print(
-                    f"User {user_principal_name} already exists with lower role ({current_role}). Updating to {access_right}."
-                )
-                return self.update_user(
-                    user_principal_name=user_principal_name,
-                    workspace_id=workspace_id,
-                    access_right=access_right,
-                )
-            else:
-                # print(f'User {user_principal_name} already has same or higher privilege: {current_role}. No action taken.')
-                return {
-                    "message": f"User already has same or higher privilege: {current_role}"
-                }
+        if existing_user is not None:
+            current_role = existing_user.get("groupUserAccessRight", "")
+            print(
+                f"Principal {user_principal_name} already exists with role ({current_role}). Updating to {access_right}."
+            )
+            return self.update_user(
+                user_principal_name=user_principal_name,
+                workspace_id=workspace_id,
+                access_right=access_right,
+                user_type=user_type,
+            )
 
         request_url = self.main_url + f"/groups/{workspace_id}/users"
         headers = {"Authorization": f"Bearer {self.token}"}
 
-        # Add user to workspace with the specified access right.
-        # https://learn.microsoft.com/en-us/rest/api/power-bi/groups/add-group-user#groupuseraccessright
-
-        # If service principal account
-        if user_type == "SP":
-            data = {
-                "identifier": user_principal_name,
-                "groupUserAccessRight": access_right,
-            }
-        else:
-            data = {
-                "emailAddress": user_principal_name,
-                "groupUserAccessRight": access_right,
-            }
+        # https://learn.microsoft.com/en-us/rest/api/power-bi/groups/add-group-user
+        data = self._workspace_user_payload(
+            user_principal_name, access_right, user_type
+        )
 
         r = requests.post(url=request_url, headers=headers, json=data)
         status = r.status_code
 
         if status == 200:
             print(
-                f"User {user_principal_name} added successfully to workspace {workspace_id} as {access_right}."
+                f"Principal {user_principal_name} added successfully to workspace "
+                f"{workspace_id} as {access_right}."
             )
             return {"message": "Success"}
         else:
             try:
-                response = json.loads(r.content)
+                response = json.loads(r.content.decode("utf-8"))
                 error_message = response["error"]
             except Exception:
                 return {"message": "Error reading JSON response"}
@@ -408,66 +410,63 @@ class Workspace:
         user_principal_name: str = "",
         workspace_id: str = "",
         access_right: str = "Member",
+        user_type: str = "User",
     ) -> Dict:
         """
-        Update an user on a workspace.
+        Update a user, security group, or app on a workspace.
 
         Args:
-            user_principal_name (str, optional): user e-mail or identifier of service principal.
-            workspace_id (str, optional): workspace id to add the user to.
+            user_principal_name (str, optional): identifier of the principal.
+            workspace_id (str, optional): workspace id to update the principal in.
             access_right (str, optional): access right type. Defaults to 'Member'.
+            user_type (str, optional): principal type, User, Group, or App.
+                Defaults to 'User'.
 
         Returns:
             Dict: status message.
         """
 
-        # If both, user and workspace if are provided...
-        if (user_principal_name != "") & (workspace_id != ""):
-
-            request_url = self.main_url + f"/groups/{workspace_id}/users"
-
-            headers = {"Authorization": f"Bearer {self.token}"}
-
-            # Add user to workspace with the specified access right.
-            # https://learn.microsoft.com/en-us/rest/api/power-bi/groups/update-group-user
-            data = {
-                "identifier": user_principal_name,
-                "groupUserAccessRight": access_right,
-                "principalType": "User",
-            }
-
-            # Make the request
-            r = requests.put(url=request_url, headers=headers, json=data)
-
-            # Get HTTP status and content
-            status = r.status_code
-
-            # If success...
-            if status == 200:
-                return {"message": "Success"}
-
-            elif status == 401:
-                return {"message": "Not enough privileges to update user."}
-
-            elif status == 404:
-                return {"message": "User was not found in workspace."}
-
-            else:
-                response = json.loads(r.content)
-                print(f"status={status}, response={response}")
-                # If any error happens, return message.
-                error_message = f"Error for workspace_id={workspace_id}: {response.get('error', {}).get('code', 'Unknown')}"
-
-                return {
-                    "message": {
-                        "error_status": r.status_code,
-                        "error": error_message,
-                        "content": r.content,
-                    }
-                }
-
-        else:
+        if user_principal_name == "" or workspace_id == "":
             return {"message": "Missing parameters, please check."}
+
+        if user_type not in {"User", "Group", "App"}:
+            return {"message": "Invalid user_type. Expected User, Group, or App."}
+
+        request_url = self.main_url + f"/groups/{workspace_id}/users"
+
+        headers = {"Authorization": f"Bearer {self.token}"}
+
+        # https://learn.microsoft.com/en-us/rest/api/power-bi/groups/update-group-user
+        data = self._workspace_user_payload(
+            user_principal_name, access_right, user_type
+        )
+
+        r = requests.put(url=request_url, headers=headers, json=data)
+        status = r.status_code
+
+        if status == 200:
+            return {"message": "Success"}
+
+        if status == 401:
+            return {"message": "Not enough privileges to update user."}
+
+        if status == 404:
+            return {"message": "User was not found in workspace."}
+
+        response = json.loads(r.content)
+        print(f"status={status}, response={response}")
+        error_message = (
+            f"Error for workspace_id={workspace_id}: "
+            f"{response.get('error', {}).get('code', 'Unknown')}"
+        )
+
+        return {
+            "message": {
+                "error_status": r.status_code,
+                "error": error_message,
+                "content": r.content,
+            }
+        }
 
     def remove_user(
         self, user_principal_name: str = "", workspace_id: str = ""

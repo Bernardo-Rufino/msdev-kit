@@ -11,7 +11,7 @@ Usage:
 import json
 import base64
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, call, patch
 from msdev_kit.fabric.pipeline import Pipeline
 
 
@@ -538,6 +538,113 @@ class TestFindPipelinesByDataflow:
     def test_missing_dataflow_id_or_name(self, pl):
         result = pl.find_pipelines_by_dataflow('ws-1', '')
         assert 'Missing dataflow id or name' in result['message']
+
+    def test_missing_dataflow_list(self, pl):
+        result = pl.find_pipelines_by_dataflow('ws-1', [])
+        assert 'Missing dataflow id or name' in result['message']
+
+    def test_finds_pipelines_for_multiple_dataflows_with_one_scan(self, pl):
+        """A bulk lookup fetches each pipeline's activities only once."""
+        pipelines = {
+            'message': 'Success',
+            'content': [
+                {'id': 'pl-1', 'displayName': 'Pipeline A'},
+                {'id': 'pl-2', 'displayName': 'Pipeline B'},
+            ],
+        }
+        activities = {
+            'pl-1': {
+                'message': 'Success',
+                'content': [
+                    {
+                        'activity_type': 'RefreshDataflow',
+                        'activity_name': 'Refresh Sales',
+                        'typeProperties': {'dataflowId': 'df-sales'},
+                    },
+                    {
+                        'activity_type': 'Wait',
+                        'activity_name': 'Wait',
+                        'typeProperties': {},
+                    },
+                ],
+            },
+            'pl-2': {
+                'message': 'Success',
+                'content': [
+                    {
+                        'activity_type': 'RefreshDataflow',
+                        'activity_name': 'Refresh Sales Again',
+                        'typeProperties': {'dataflowId': 'df-sales'},
+                    },
+                    {
+                        'activity_type': 'RefreshDataflow',
+                        'activity_name': 'Refresh Finance',
+                        'typeProperties': {'dataflowId': 'df-finance'},
+                    },
+                ],
+            },
+        }
+
+        with (
+            patch.object(
+                pl,
+                '_resolve_dataflow_id',
+                side_effect=[
+                    ('df-sales', 'Sales'),
+                    ('df-finance', 'Finance'),
+                ],
+            ) as resolve_dataflow,
+            patch.object(pl, 'list_pipelines', return_value=pipelines) as list_pipelines,
+            patch.object(
+                pl,
+                'get_pipeline_activities',
+                side_effect=lambda workspace_id, pipeline_id: activities[pipeline_id],
+            ) as get_activities,
+        ):
+            result = pl.find_pipelines_by_dataflow(
+                'ws-1', ['df-sales', 'df-finance'], max_workers=1
+            )
+
+        assert result['message'] == 'Success'
+        assert result['content'] == [
+            {
+                'pipeline_id': 'pl-1',
+                'pipeline_name': 'Pipeline A',
+                'dataflows': [
+                    {
+                        'dataflow_id': 'df-sales',
+                        'dataflow_name': 'Sales',
+                        'activities': ['Refresh Sales'],
+                    }
+                ],
+            },
+            {
+                'pipeline_id': 'pl-2',
+                'pipeline_name': 'Pipeline B',
+                'dataflows': [
+                    {
+                        'dataflow_id': 'df-sales',
+                        'dataflow_name': 'Sales',
+                        'activities': ['Refresh Sales Again'],
+                    },
+                    {
+                        'dataflow_id': 'df-finance',
+                        'dataflow_name': 'Finance',
+                        'activities': ['Refresh Finance'],
+                    },
+                ],
+            },
+        ]
+        resolve_dataflow.assert_has_calls([
+            call('ws-1', 'df-sales'),
+            call('ws-1', 'df-finance'),
+        ])
+        list_pipelines.assert_called_once_with('ws-1')
+        assert get_activities.call_count == 2
+        get_activities.assert_has_calls([
+            call('ws-1', 'pl-1'),
+            call('ws-1', 'pl-2'),
+        ])
 
     @patch('msdev_kit.fabric.pipeline.Dataset')
     @patch('msdev_kit.fabric.pipeline.Notebook')
