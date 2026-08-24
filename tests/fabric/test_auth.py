@@ -93,13 +93,15 @@ class TestInteractiveAuth:
         mock_client_secret_cls.assert_not_called()
         mock_interactive_cls.assert_called_once()
 
+    @patch("msdev_kit.auth.TokenCachePersistenceOptions")
     @patch("msdev_kit.auth.InteractiveBrowserCredential")
     def test_get_token_for_user_uses_a_fresh_interactive_credential(
-        self, mock_cred_cls
+        self, mock_cred_cls, mock_cache_options_cls
     ):
         mock_cred = MagicMock()
         mock_cred.get_token.return_value = MagicMock(token="fake-azure-token")
         mock_cred_cls.return_value = mock_cred
+        mock_cache_options = mock_cache_options_cls.return_value
 
         with patch("msdev_kit.auth.ClientSecretCredential"):
             auth = Auth("tenant", "client", "secret")
@@ -107,6 +109,32 @@ class TestInteractiveAuth:
 
         mock_cred.get_token.assert_called_once_with(
             "https://management.azure.com/.default"
+        )
+        mock_cache_options_cls.assert_called_once_with(
+            allow_unencrypted_storage=False
+        )
+        mock_cred_cls.assert_called_once_with(
+            cache_persistence_options=mock_cache_options
+        )
+
+    @patch("msdev_kit.auth.TokenCachePersistenceOptions")
+    @patch("msdev_kit.auth.InteractiveBrowserCredential")
+    def test_get_token_for_user_can_allow_unencrypted_storage(
+        self, mock_cred_cls, mock_cache_options_cls
+    ):
+        mock_cred_cls.return_value.get_token.return_value = MagicMock(token="token")
+
+        with patch("msdev_kit.auth.ClientSecretCredential"):
+            auth = Auth("tenant", "client", "secret")
+            assert (
+                auth.get_token_for_user(
+                    "fabric", allow_unencrypted_storage=True
+                )
+                == "token"
+            )
+
+        mock_cache_options_cls.assert_called_once_with(
+            allow_unencrypted_storage=True
         )
 
     def test_get_token_for_user_rejects_unknown_service(self):
