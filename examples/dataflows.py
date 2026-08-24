@@ -56,7 +56,7 @@ def replace_destination_and_fix_pipelines(
 
     new_dataflow_id = result["content"]["id"]
     matches = pipeline.find_pipelines_by_dataflow(
-        workspace_id=workspace_id, dataflow_id=old_dataflow_id
+        workspace_id=workspace_id, dataflow_id_or_name=old_dataflow_id
     )
     if matches.get("message") != "Success":
         raise RuntimeError(f"Pipeline lookup failed: {matches}")

@@ -106,6 +106,14 @@ token = auth.get_token_for_user('pbi')     # opens browser for login
 token = auth.get_token_for_user('fabric')
 ```
 
+If the operating system cannot provide encrypted token-cache storage, opt in
+explicitly to an unencrypted cache. This can expose tokens to other users of
+the same machine, so use it only when secure storage is unavailable:
+
+```python
+token = auth.get_token_for_user('fabric', allow_unencrypted_storage=True)
+```
+
 ### Credentials
 
 For the bundled examples, copy the template and set the values:
@@ -148,14 +156,18 @@ workspaces = ws.list_workspaces_for_user()
 ws.add_user('user@company.com', workspace_id, 'Member', 'User')
 ```
 
+`add_user` and `update_user` accept the official Power BI principal types:
+`User`, `Group`, and `App`. `add_user` updates an existing matching principal
+instead of issuing a duplicate add request.
+
 | Method | Description |
 |---|---|
 | `list_workspaces_for_user(...)` | List all workspaces the user has access to, with optional filters. |
 | `get_workspace_details(workspace_id)` | Get details for a specific workspace. |
 | `list_users(workspace_id)` | List all users in a workspace. |
 | `list_reports(workspace_id)` | List all reports in a workspace. |
-| `add_user(user_principal_name, workspace_id, access_right, user_type)` | Add a user or service principal to a workspace. |
-| `update_user(user_principal_name, workspace_id, access_right)` | Update a user's role on a workspace. |
+| `add_user(user_principal_name, workspace_id, access_right, user_type)` | Add or update a User, Group, or App in a workspace. |
+| `update_user(user_principal_name, workspace_id, access_right, user_type)` | Update a User, Group, or App role in a workspace. |
 | `remove_user(user_principal_name, workspace_id)` | Remove a user from a workspace. |
 | `batch_update_user(user, workspaces_list)` | Batch update a user across multiple workspaces. |
 
@@ -273,8 +285,24 @@ activities = pipe.get_pipeline_activities(workspace_id, 'My Pipeline')
 | `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a pipeline. |
 | `update_pipeline_definition(workspace_id, pipeline_id, definition)` | Update an existing pipeline definition. |
 | `get_pipeline_activities(workspace_id, pipeline_id_or_name)` | Get activities from a pipeline. Accepts ID or display name. |
-| `find_pipelines_by_dataflow(workspace_id, dataflow_id_or_name)` | Find pipelines that reference a specific dataflow. |
+| `find_pipelines_by_dataflow(workspace_id, dataflow_id_or_name)` | Find pipelines that reference one dataflow or a list of dataflows, fetching each pipeline definition once. |
 | `replace_dataflow_id_in_pipeline(workspace_id, pipeline_id, old_id, new_id)` | Replace a dataflow ID in all RefreshDataflow activities. |
+
+To find pipelines for multiple dataflows, pass IDs, display names, or a mixture
+of both. The method lists the pipelines once and scans each pipeline definition
+once, concurrently up to `max_workers`:
+
+```python
+matches = pipe.find_pipelines_by_dataflow(
+    workspace_id,
+    ['sales-dataflow-id', 'Finance Dataflow'],
+    max_workers=5,
+)
+```
+
+For a list input, each matching pipeline includes a `dataflows` list. Every
+entry identifies the matched dataflow and its matching `RefreshDataflow`
+activities. Single-dataflow calls keep the existing `activities` list output.
 
 <details>
 <summary><strong>Example: replacing a dataflow destination and updating pipelines</strong></summary>

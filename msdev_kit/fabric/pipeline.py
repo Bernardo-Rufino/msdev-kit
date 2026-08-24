@@ -2,8 +2,9 @@ import json
 import time
 import base64
 import requests
-from typing import Dict
+from typing import Dict, List, Union
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from .utilities import create_directory
 from .dataflow import Dataflow
 from .notebook import Notebook
 from .dataset import Dataset
@@ -14,11 +15,18 @@ class Pipeline:
 
     def __init__(self, token: str):
         """
-        Initialize variables.
+        Initialize the Fabric pipeline client and local pipeline output directory.
         """
         self.fabric_api_base_url = "https://api.fabric.microsoft.com"
         self.token = token
         self.headers = {"Authorization": f"Bearer {self.token}"}
+
+        # Directories
+        self.pipelines_dir = "./data/pipelines"
+        self.directories = [self.pipelines_dir]
+
+        for dir in self.directories:
+            create_directory(dir)
 
     def _request_with_retry(
         self, method: str, url: str, max_retries: int = 3, **kwargs
@@ -145,43 +153,66 @@ class Pipeline:
         return {"message": "Success", "content": pipelines}
 
     def find_pipelines_by_dataflow(
-        self, workspace_id: str, dataflow_id_or_name: str, max_workers: int = 5
+        self,
+        workspace_id: str,
+        dataflow_id_or_name: Union[str, List[str]],
+        max_workers: int = 5,
     ) -> Dict:
         """
-        Finds all pipelines in a workspace that reference a specific dataflow.
+        Finds all pipelines in a workspace that reference one or more dataflows.
 
-        Accepts either a dataflow ID or display name. Lists all pipelines, fetches
-        their activities concurrently, and checks which ones contain a RefreshDataflow
-        activity targeting the resolved dataflow ID.
+        Accepts a dataflow ID, display name, or a list of either. Pipelines are listed
+        once and each pipeline definition is fetched once, even when multiple
+        dataflows are requested.
 
         Args:
             workspace_id (str): The workspace ID to search pipelines in.
-            dataflow_id_or_name (str): The dataflow ID or display name to search for.
+            dataflow_id_or_name (Union[str, List[str]]): A dataflow ID, display name,
+                or list of IDs and display names to search for.
             max_workers (int): Maximum number of concurrent requests. Defaults to 5.
 
         Returns:
-            Dict: 'message' and 'content' (list of dicts with pipeline_id, pipeline_name,
-                and activities — the matching activity names within that pipeline).
+            Dict: For a single dataflow, 'content' is a list of dicts with pipeline_id,
+                pipeline_name, and matching activity names. For multiple dataflows,
+                each result also includes a 'dataflows' list with the matching dataflow
+                ID, name, and activities in that pipeline.
         """
         if workspace_id == "":
             return {"message": "Missing workspace id, please check.", "content": ""}
-        if dataflow_id_or_name == "":
+        if dataflow_id_or_name == "" or dataflow_id_or_name == []:
             return {
                 "message": "Missing dataflow id or name, please check.",
                 "content": "",
             }
 
-        # Resolve dataflow ID
-        dataflow_id, dataflow_name = self._resolve_dataflow_id(
-            workspace_id, dataflow_id_or_name
+        multiple_dataflows = isinstance(dataflow_id_or_name, list)
+        dataflow_inputs = (
+            dataflow_id_or_name if multiple_dataflows else [dataflow_id_or_name]
         )
-        if not dataflow_id:
-            return {
-                "message": f"Dataflow not found: {dataflow_id_or_name}",
-                "content": "",
-            }
+        resolved_dataflows = {}
 
-        print(f"Resolved dataflow: {dataflow_name} ({dataflow_id})")
+        for dataflow_input in dataflow_inputs:
+            if not dataflow_input:
+                return {
+                    "message": "Missing dataflow id or name, please check.",
+                    "content": "",
+                }
+
+            dataflow_id, dataflow_name = self._resolve_dataflow_id(
+                workspace_id, dataflow_input
+            )
+            if not dataflow_id:
+                return {
+                    "message": f"Dataflow not found: {dataflow_input}",
+                    "content": "",
+                }
+            resolved_dataflows[dataflow_id] = dataflow_name
+
+        resolved_dataflow_ids = set(resolved_dataflows)
+        print(
+            f"Resolved {len(resolved_dataflows)} dataflow(s): "
+            f"{', '.join(resolved_dataflows)}"
+        )
 
         # List all pipelines
         pipelines_result = self.list_pipelines(workspace_id)
@@ -189,9 +220,7 @@ class Pipeline:
             return pipelines_result
 
         pipelines = pipelines_result["content"]
-        print(
-            f"Found {len(pipelines)} pipelines. Scanning for dataflow {dataflow_id}..."
-        )
+        print(f"Found {len(pipelines)} pipelines. Scanning their definitions once...")
 
         def _check_pipeline(p):
             pipeline_id = p.get("id", "")
@@ -201,19 +230,37 @@ class Pipeline:
             if activities_result.get("message") != "Success":
                 return None
 
-            matching_activities = []
+            matching_dataflows = {}
             for activity in activities_result["content"]:
                 if activity["activity_type"] != "RefreshDataflow":
                     continue
                 props = activity.get("typeProperties", {})
-                if props.get("dataflowId") == dataflow_id:
-                    matching_activities.append(activity["activity_name"])
+                activity_dataflow_id = props.get("dataflowId")
+                if activity_dataflow_id not in resolved_dataflow_ids:
+                    continue
+                matching_dataflows.setdefault(activity_dataflow_id, []).append(
+                    activity["activity_name"]
+                )
 
-            if matching_activities:
+            if matching_dataflows:
+                if not multiple_dataflows:
+                    return {
+                        "pipeline_id": pipeline_id,
+                        "pipeline_name": pipeline_name,
+                        "activities": next(iter(matching_dataflows.values())),
+                    }
                 return {
                     "pipeline_id": pipeline_id,
                     "pipeline_name": pipeline_name,
-                    "activities": matching_activities,
+                    "dataflows": [
+                        {
+                            "dataflow_id": dataflow_id,
+                            "dataflow_name": resolved_dataflows[dataflow_id],
+                            "activities": matching_dataflows[dataflow_id],
+                        }
+                        for dataflow_id in resolved_dataflows
+                        if dataflow_id in matching_dataflows
+                    ],
                 }
             return None
 
@@ -226,7 +273,10 @@ class Pipeline:
                     matches.append(result)
 
         matches.sort(key=lambda m: m["pipeline_name"].lower())
-        print(f"Found {len(matches)} pipeline(s) referencing dataflow {dataflow_id}.")
+        print(
+            f"Found {len(matches)} pipeline(s) referencing "
+            f"{len(resolved_dataflows)} dataflow(s)."
+        )
         return {"message": "Success", "content": matches}
 
     def update_pipeline_definition(

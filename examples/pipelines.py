@@ -19,7 +19,7 @@ def get_activities(pipeline, workspace_id, pipeline_id_or_name):
 
 def find_by_dataflow(pipeline, workspace_id, dataflow_id):
     result = pipeline.find_pipelines_by_dataflow(
-        workspace_id=workspace_id, dataflow_id=dataflow_id
+        workspace_id=workspace_id, dataflow_id_or_name=dataflow_id
     )
     if result.get("message") != "Success":
         print(f"Error: {result.get('message')}")
