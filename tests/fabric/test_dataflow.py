@@ -510,9 +510,18 @@ class TestUpgradeDestinationPreservation:
             return_value={'message': 'Success', 'content': {'id': 'new-id'}}
         )
 
-        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', source_type='gen2',
+            pbi_access_token='pbi-token',
+        )
 
         assert result['message'] == 'Success'
+        assert df._get_dataflow_pbi_definition.call_args.kwargs['headers'] == {
+            'Authorization': 'Bearer pbi-token',
+        }
+        assert df._get_dataflow_pbi_datasources.call_args.kwargs['headers'] == {
+            'Authorization': 'Bearer pbi-token',
+        }
         definition = df.create_dataflow_gen2_from_definition.call_args.args[2]
         metadata = next(part for part in definition['definition']['parts']
                         if part['path'] == 'queryMetadata.json')
@@ -634,10 +643,14 @@ class TestUpgradeDestinationPreservation:
 
         result = df.upgrade_to_gen2_cicd(
             'source-workspace', 'source-id', source_type='gen2',
-            use_accessible_connections=True,
+            use_accessible_connections=True, pbi_access_token='pbi-token',
         )
 
         assert result['message'] == 'Success'
+        assert df._get_dataflow_pbi_definition.call_args.kwargs['headers'] == {
+            'Authorization': 'Bearer pbi-token',
+        }
+        assert df.headers == {'Authorization': 'Bearer fake-token'}
         df._get_dataflow_pbi_datasources.assert_not_called()
         definition = df.create_dataflow_gen2_from_definition.call_args.args[2]
         part = next(p for p in definition['definition']['parts']

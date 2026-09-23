@@ -14,6 +14,11 @@ their IDs in the new definition. It does **not** copy credentials or secrets.
 Matching only the source dataflow's exported connection IDs can retain personal
 connections that the SPN cannot use.
 
+The SPN needs two audience-specific access tokens. The Fabric token initializes
+`Dataflow` for connection listing and item creation. Pass its Power BI token as
+`pbi_access_token` to read the standard source definition and bound data sources.
+Do not use the delegated user token for either of those steps.
+
 Fabric currently rejects a Dataflow Gen2 CI/CD refresh initiated by an SPN with
 `SPNBasedRefreshNotAllowed`. Pass a **delegated Fabric user token** through
 `refresh_access_token` when `refresh=True`. The token is used only to submit and
@@ -82,6 +87,7 @@ result = dataflow.upgrade_to_gen2_cicd(
     use_accessible_connections=True,
     refresh=True,
     refresh_access_token=user_token,
+    pbi_access_token=auth.get_token('pbi'),         # SPN reads the source
 )
 if result.get('message') != 'Success':
     # A failed refresh can still leave the new item in place.

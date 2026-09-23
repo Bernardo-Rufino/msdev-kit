@@ -37,6 +37,7 @@ def main() -> None:
     # Dataflow Gen2 CI/CD refresh job. Acquire a delegated user token separately.
     delegated_token = auth.get_token_for_user("fabric")
     dataflow = Dataflow(auth.get_token("fabric"))
+    pbi_token = auth.get_token("pbi")
     result = dataflow.upgrade_to_gen2_cicd(
         workspace_id=args.workspace_id,
         dataflow_id=args.dataflow_id,
@@ -45,6 +46,7 @@ def main() -> None:
         use_accessible_connections=True,
         refresh=True,
         refresh_access_token=delegated_token,
+        pbi_access_token=pbi_token,
     )
 
     item_id = (result.get("content") or {}).get("id")

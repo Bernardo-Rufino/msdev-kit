@@ -81,6 +81,7 @@ class Dataflow:
         dataflow_id: str,
         log_retries: bool = True,
         on_rate_limit: Optional[Callable[[float], None]] = None,
+        headers: Optional[Dict] = None,
     ) -> Dict:
         """
         Fetches a dataflow definition from the Power BI REST API.
@@ -103,7 +104,7 @@ class Dataflow:
         r = self._request_with_retry(
             'GET',
             request_url,
-            headers=self.headers,
+            headers=headers if headers is not None else self.headers,
             log_retries=log_retries,
             on_rate_limit=on_rate_limit,
         )
@@ -2003,10 +2004,14 @@ class Dataflow:
         }
 
 
-    def _get_dataflow_pbi_datasources(self, workspace_id: str, dataflow_id: str) -> Dict:
+    def _get_dataflow_pbi_datasources(
+        self, workspace_id: str, dataflow_id: str, headers: Optional[Dict] = None
+    ) -> Dict:
         """Return the data sources bound to a standard Power BI dataflow."""
         url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}/datasources'
-        response = self._request_with_retry('GET', url, headers=self.headers)
+        response = self._request_with_retry(
+            'GET', url, headers=headers if headers is not None else self.headers
+        )
         if response.status_code != 200:
             return {'message': {'error': response.text, 'status_code': response.status_code}}
         return {'message': 'Success', 'content': response.json().get('value', [])}
@@ -2303,7 +2308,8 @@ class Dataflow:
                 source_type: str = 'gen1',
                 refresh: bool = False,
                 use_accessible_connections: bool = False,
-                refresh_access_token: str = '') -> Dict:
+                refresh_access_token: str = '',
+                pbi_access_token: str = '') -> Dict:
         """
         Upgrades a Dataflow Gen1 or Gen2 (standard) to Dataflow Gen2 CI/CD (native Fabric).
 
@@ -2352,6 +2358,9 @@ class Dataflow:
                 the refresh job. Useful when the client uses a service principal,
                 which Fabric does not allow to refresh Dataflow Gen2 CI/CD.
                 The token is used only to start and poll the refresh job.
+            pbi_access_token (str): Optional Power BI audience token for reading
+                the standard source definition and bound data sources. Use it
+                when this client's primary token is for the Fabric audience.
 
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2 CI/CD.
@@ -2370,6 +2379,8 @@ class Dataflow:
 
         # If no destination workspace provided, use the source workspace
         target_workspace_id = destination_workspace_id if destination_workspace_id != '' else workspace_id
+        pbi_headers = (dict(self.headers, Authorization=f'Bearer {pbi_access_token}')
+                       if pbi_access_token else self.headers)
 
         if source_type == 'gen1':
             # Use the dedicated saveAsNativeArtifact API for Gen1 → Gen2 CI/CD conversion
@@ -2389,7 +2400,7 @@ class Dataflow:
                 body['targetWorkspaceId'] = target_workspace_id
 
             print(f"Converting Gen1 dataflow {dataflow_id} to Gen2 CI/CD via saveAsNativeArtifact...")
-            r = requests.post(url=request_url, headers=self.headers, json=body)
+            r = requests.post(url=request_url, headers=pbi_headers, json=body)
 
             if r.status_code == 200:
                 response = json.loads(r.content)
@@ -2433,7 +2444,9 @@ class Dataflow:
 
             # Standard Gen2 - fetch from PBI API and convert
             print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
-            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
+            pbi_result = self._get_dataflow_pbi_definition(
+                workspace_id, dataflow_id, headers=pbi_headers
+            )
 
             if pbi_result.get('message') != 'Success':
                 return pbi_result
@@ -2503,7 +2516,7 @@ class Dataflow:
                     return {'message': {'error': str(exc)}, 'content': ''}
             elif pbi_content.get('pbi:mashup', {}).get('connectionOverrides'):
                 datasource_result = self._get_dataflow_pbi_datasources(
-                    workspace_id, dataflow_id
+                    workspace_id, dataflow_id, headers=pbi_headers
                 )
                 if datasource_result.get('message') != 'Success':
                     return datasource_result

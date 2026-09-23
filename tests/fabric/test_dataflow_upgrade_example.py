@@ -1,7 +1,7 @@
 """Safety and authentication flow for the runnable Dataflow upgrade example."""
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -44,7 +44,7 @@ def test_example_uses_spn_for_creation_and_user_for_refresh(monkeypatch, capsys)
         "--dataflow-id", source_id, "--name", "copy", "--execute",
     ])
     auth = MagicMock()
-    auth.get_token.return_value = "spn-token"
+    auth.get_token.side_effect = ["spn-fabric-token", "spn-pbi-token"]
     auth.get_token_for_user.return_value = "user-token"
     monkeypatch.setattr(example, "build_auth", lambda: auth)
     client = MagicMock()
@@ -57,9 +57,9 @@ def test_example_uses_spn_for_creation_and_user_for_refresh(monkeypatch, capsys)
 
     example.main()
 
-    auth.get_token.assert_called_once_with("fabric")
+    assert auth.get_token.call_args_list == [call("fabric"), call("pbi")]
     auth.get_token_for_user.assert_called_once_with("fabric")
-    client_type.assert_called_once_with("spn-token")
+    client_type.assert_called_once_with("spn-fabric-token")
     client.upgrade_to_gen2_cicd.assert_called_once_with(
         workspace_id=workspace_id,
         dataflow_id=source_id,
@@ -68,8 +68,10 @@ def test_example_uses_spn_for_creation_and_user_for_refresh(monkeypatch, capsys)
         use_accessible_connections=True,
         refresh=True,
         refresh_access_token="user-token",
+        pbi_access_token="spn-pbi-token",
     )
     output = capsys.readouterr().out
     assert "Completed" in output
     assert "user-token" not in output
-    assert "spn-token" not in output
+    assert "spn-fabric-token" not in output
+    assert "spn-pbi-token" not in output
