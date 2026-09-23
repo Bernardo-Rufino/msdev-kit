@@ -501,7 +501,13 @@ class Pipeline:
             }
 
     def get_pipeline_activities(
-        self, workspace_id: str, pipeline_id_or_name: str, max_workers: int = 5
+        self,
+        workspace_id: str,
+        pipeline_id_or_name: str,
+        max_workers: int = 5,
+        recursive: bool = False,
+        *,
+        _include_nested: bool = False,
     ) -> Dict:
         """
         Gets the list of activities from a Fabric Data Pipeline definition,
@@ -509,18 +515,26 @@ class Pipeline:
         for supported activity types.
 
         Accepts either a pipeline ID or display name. For activities of type
-        RefreshDataflow, TridentNotebook, InvokePipeline, or DatasetRefresh,
-        the referenced object's display name is resolved using the appropriate class.
+        RefreshDataflow, TridentNotebook, InvokePipeline, ExecutePipeline, or
+        DatasetRefresh, the referenced object's display name is resolved.
+        When recursive is True, also includes nested control-flow activities and
+        activities from pipelines reached through InvokePipeline or ExecutePipeline.
+        Each pipeline is read once per workspace, including in cycles.
 
         Args:
             workspace_id (str): The ID of the workspace where the pipeline resides.
             pipeline_id_or_name (str): The pipeline ID or display name.
-            max_workers (int): Maximum number of concurrent requests for name resolution. Defaults to 5.
+            max_workers (int): Maximum concurrent requests for name resolution.
+                Defaults to 5.
+            recursive (bool): Include nested and invoked activities. Defaults to False.
 
         Returns:
             Dict: A dictionary with 'message' and 'content' (list of activity dicts with
-                pipeline_id, pipeline_name, activity_name, activity_type, typeProperties,
-                and object_name inside typeProperties for supported types).
+                pipeline_id, pipeline_name, activity_name, activity_type,
+                typeProperties,
+                and object_name inside typeProperties for supported types). Recursive
+                results also include workspace_id on each activity. Child lookup errors
+                are returned instead of silently omitting downstream activities.
         """
         if workspace_id == "":
             return {"message": "Missing workspace id, please check.", "content": ""}
@@ -567,22 +581,42 @@ class Pipeline:
             "RefreshDataflow": "dataflowId",
             "TridentNotebook": "notebookId",
             "InvokePipeline": "pipelineId",
+            "ExecutePipeline": "pipeline",
             "DatasetRefresh": "datasetId",
         }
 
+        def _object_id(activity_type, props):
+            if activity_type == "ExecutePipeline":
+                return props.get("pipeline", {}).get("referenceName", "")
+            return props.get(activity_object_map[activity_type], "")
+
         # Extract activities and collect unique items to resolve, grouped by type
         raw_activities = pipeline_content.get("properties", {}).get("activities", [])
-        items_to_resolve = {}  # {object_id: (target_workspace_id, activity_type)}
+        if recursive or _include_nested:
+
+            def _flatten(activities):
+                for activity in activities:
+                    yield activity
+                    props = activity.get("typeProperties", {})
+                    for key in (
+                        "activities", "ifTrueActivities", "ifFalseActivities",
+                        "defaultActivities",
+                    ):
+                        yield from _flatten(props.get(key, []))
+                    for case in props.get("cases", []):
+                        yield from _flatten(case.get("activities", []))
+
+            raw_activities = list(_flatten(raw_activities))
+        items_to_resolve = {}  # (object_id, target_workspace_id, activity_type)
 
         for activity in raw_activities:
             activity_type = activity.get("type", "")
             if activity_type in activity_object_map:
                 props = activity.get("typeProperties", {})
-                id_key = activity_object_map[activity_type]
-                object_id = props.get(id_key, "")
+                object_id = _object_id(activity_type, props)
                 target_ws = props.get("workspaceId", workspace_id)
-                if object_id and object_id not in items_to_resolve:
-                    items_to_resolve[object_id] = (target_ws, activity_type)
+                if object_id:
+                    items_to_resolve[(object_id, target_ws, activity_type)] = None
 
         # Resolve object names concurrently using the appropriate class per type
         resolved_names = {}
@@ -602,7 +636,7 @@ class Pipeline:
                         else ""
                     )
                     return object_id, name
-                elif activity_type == "InvokePipeline":
+                elif activity_type in ("InvokePipeline", "ExecutePipeline"):
                     result = self.get_pipeline(target_ws, object_id)
                     name = (
                         result["content"].get("displayName", "")
@@ -616,12 +650,14 @@ class Pipeline:
 
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
-                    executor.submit(_resolve_name, obj_id, ws_id, a_type): obj_id
-                    for obj_id, (ws_id, a_type) in items_to_resolve.items()
+                    executor.submit(_resolve_name, obj_id, ws_id, a_type): (
+                        obj_id, ws_id, a_type
+                    )
+                    for obj_id, ws_id, a_type in items_to_resolve
                 }
                 for future in as_completed(futures):
-                    obj_id, name = future.result()
-                    resolved_names[obj_id] = name
+                    _, name = future.result()
+                    resolved_names[futures[future]] = name
 
         # Build activity list with object_name inside typeProperties as the first key
         activities = []
@@ -630,8 +666,11 @@ class Pipeline:
             type_props = activity.get("typeProperties", {})
 
             if activity_type in activity_object_map:
-                object_id = type_props.get(activity_object_map[activity_type], "")
-                object_name = resolved_names.get(object_id, "")
+                object_id = _object_id(activity_type, type_props)
+                target_ws = type_props.get("workspaceId", workspace_id)
+                object_name = resolved_names.get(
+                    (object_id, target_ws, activity_type), ""
+                )
                 type_props = {"object_name": object_name, **type_props}
 
             entry = {
@@ -643,5 +682,79 @@ class Pipeline:
             }
 
             activities.append(entry)
+
+        if not recursive:
+            return {"message": "Success", "content": activities}
+
+        # Traverse the invocation graph without revisiting a pipeline. The workspace
+        # is part of the key because child pipelines can live in another workspace.
+        for activity in activities:
+            activity["workspace_id"] = workspace_id
+        seen = {(workspace_id, pipeline_id)}
+        pending = [(workspace_id, activity) for activity in activities]
+        while pending:
+            children = []
+            for parent_workspace_id, activity in pending:
+                if activity["activity_type"] not in (
+                    "InvokePipeline", "ExecutePipeline"
+                ):
+                    continue
+
+                props = activity["typeProperties"]
+                child_id = (
+                    props.get("pipelineId")
+                    if activity["activity_type"] == "InvokePipeline"
+                    else props.get("pipeline", {}).get("referenceName")
+                )
+                child_workspace_id = props.get("workspaceId") or parent_workspace_id
+                if not child_id:
+                    return {
+                        "message": (
+                            f"{activity['activity_type']} activity "
+                            f"{activity['activity_name']!r} in pipeline "
+                            f"{activity['pipeline_id']} has no pipeline reference."
+                        ),
+                        "content": "",
+                    }
+
+                child_key = (child_workspace_id, child_id)
+                if child_key not in seen:
+                    seen.add(child_key)
+                    children.append(child_key)
+
+            pending = []
+            if not children:
+                break
+
+            # Definitions at the same depth are independent. executor.map keeps
+            # the result order aligned with the invocation order.
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                results = list(
+                    executor.map(
+                        lambda child: self.get_pipeline_activities(
+                            child[0], child[1], max_workers=max_workers,
+                            _include_nested=True,
+                        ),
+                        children,
+                    )
+                )
+
+            for (child_workspace_id, child_id), child_result in zip(children, results):
+                if child_result.get("message") != "Success":
+                    return {
+                        "message": {
+                            "error": (
+                                f"Could not read invoked pipeline {child_id} "
+                                f"in workspace {child_workspace_id}"
+                            ),
+                            "cause": child_result.get("message"),
+                        },
+                        "content": "",
+                    }
+
+                for child_activity in child_result["content"]:
+                    child_activity["workspace_id"] = child_workspace_id
+                    activities.append(child_activity)
+                    pending.append((child_workspace_id, child_activity))
 
         return {"message": "Success", "content": activities}
