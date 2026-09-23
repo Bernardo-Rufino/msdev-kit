@@ -576,6 +576,102 @@ class TestUpgradeDestinationPreservation:
         assert metadata['queriesMetadata']['Orders']['loadEnabled'] is True
         assert metadata['queriesMetadata']['Helper']['loadEnabled'] is False
 
+    def test_binds_exact_accessible_sql_and_warehouse_connections(self, df):
+        source = _standard_warehouse_definition()
+        document = source['pbi:mashup']['document'].replace(
+            '#table({"A", "B"}, {})', 'Sql.Database("server", "database")'
+        )
+        source['pbi:mashup']['document'] = document
+        source['pbi:mashup']['connectionOverrides'].append(
+            {'kind': 'SQL', 'path': 'server'}
+        )
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+        available = [
+            {'id': 'personal-id', 'gatewayId': 'personal-gateway',
+             'connectivityType': 'PersonalCloud',
+             'connectionDetails': {'type': 'SQL', 'path': 'server;database'}},
+            {'id': 'sql-id', 'gatewayId': 'shared-gateway',
+             'connectivityType': 'ShareableCloud',
+             'connectionDetails': {'type': 'SQL', 'path': 'server;database'}},
+            {'id': 'warehouse-id', 'gatewayId': 'shared-gateway',
+             'connectivityType': 'ShareableCloud',
+             'connectionDetails': {'type': 'Warehouse', 'path': 'Warehouse'}},
+        ]
+
+        df._bind_accessible_connection_ids(definition, document, available)
+
+        part = next(p for p in definition['definition']['parts']
+                    if p['path'] == 'queryMetadata.json')
+        metadata = json.loads(base64.b64decode(part['payload']))
+        bindings = {(c['kind'], c['path']): json.loads(c['connectionId'])
+                    for c in metadata['connections']}
+        assert bindings == {
+            ('SQL', 'server;database'):
+                {'ClusterId': 'shared-gateway', 'DatasourceId': 'sql-id'},
+            ('Warehouse', 'Warehouse'):
+                {'ClusterId': 'shared-gateway', 'DatasourceId': 'warehouse-id'},
+        }
+
+    def test_upgrade_uses_accessible_connections_instead_of_source_ids(self, df):
+        source = _standard_warehouse_definition()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={
+            'message': 'not native',
+        })
+        df._get_dataflow_pbi_definition = MagicMock(return_value={
+            'message': 'Success', 'content': source,
+        })
+        df._get_dataflow_pbi_datasources = MagicMock()
+        df._get_accessible_fabric_connections = MagicMock(return_value={
+            'message': 'Success', 'content': [{
+                'id': 'shared-id', 'gatewayId': 'shared-gateway',
+                'connectivityType': 'ShareableCloud',
+                'connectionDetails': {'type': 'Warehouse', 'path': 'Warehouse'},
+            }],
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'id': 'new-id'},
+        })
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', source_type='gen2',
+            use_accessible_connections=True,
+        )
+
+        assert result['message'] == 'Success'
+        df._get_dataflow_pbi_datasources.assert_not_called()
+        definition = df.create_dataflow_gen2_from_definition.call_args.args[2]
+        part = next(p for p in definition['definition']['parts']
+                    if p['path'] == 'queryMetadata.json')
+        assert json.loads(base64.b64decode(part['payload']))['connections'] == [{
+            'kind': 'Warehouse', 'path': 'Warehouse',
+            'connectionId': '{"ClusterId":"shared-gateway","DatasourceId":"shared-id"}',
+        }]
+
+    def test_rejects_ambiguous_accessible_connection(self, df):
+        source = _standard_warehouse_definition()
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+        available = [
+            {'id': id, 'gatewayId': 'shared-gateway',
+             'connectivityType': 'ShareableCloud',
+             'connectionDetails': {'type': 'Warehouse', 'path': 'Warehouse'}}
+            for id in ('first', 'second')
+        ]
+
+        with pytest.raises(ValueError, match='found 2'):
+            df._bind_accessible_connection_ids(
+                definition, source['pbi:mashup']['document'], available
+            )
+
+    def test_rejects_dynamic_sql_path(self, df):
+        source = _standard_warehouse_definition()
+        document = source['pbi:mashup']['document'].replace(
+            '#table({"A", "B"}, {})', 'Sql.Database(ServerParameter, DatabaseParameter)'
+        )
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+
+        with pytest.raises(ValueError, match='dynamic SQL'):
+            df._bind_accessible_connection_ids(definition, document, [])
+
 
 class TestUpgradeRefresh:
     def test_refresh_false_does_not_start_job(self, df):
@@ -607,11 +703,13 @@ class TestUpgradeRefresh:
         })
 
         result = df.upgrade_to_gen2_cicd(
-            'source-workspace', 'source-id', source_type='gen2', refresh=True
+            'source-workspace', 'source-id', source_type='gen2', refresh=True,
+            refresh_access_token='delegated-token',
         )
 
         assert result['refresh']['status'] == 'Completed'
         assert df._refresh_upgraded_dataflow.call_args.args[1] == 'source-workspace'
+        assert df._refresh_upgraded_dataflow.call_args.args[2] == 'delegated-token'
 
     def test_refresh_true_waits_for_completed_job(self, df):
         accepted = _make_response(202, {})
@@ -637,6 +735,24 @@ class TestUpgradeRefresh:
         assert df._request_with_retry.call_args_list[0].kwargs['json'] == {
             'executionData': {'executeOption': 'ApplyChangesIfNeeded'}
         }
+
+    def test_refresh_uses_delegated_token_without_changing_client(self, df):
+        accepted = _make_response(202, {})
+        accepted.headers['Location'] = 'https://api.fabric.microsoft.com/job-id'
+        df._request_with_retry = MagicMock(side_effect=[
+            accepted, _make_response(200, {'id': 'job-id', 'status': 'Completed'}),
+        ])
+
+        with patch('msdev_kit.fabric.dataflow.time.sleep'):
+            result = df._refresh_upgraded_dataflow(
+                {'message': 'Success', 'content': {'id': 'new-id'}},
+                'workspace', 'delegated-token',
+            )
+
+        assert result['refresh']['status'] == 'Completed'
+        for call in df._request_with_retry.call_args_list:
+            assert call.kwargs['headers']['Authorization'] == 'Bearer delegated-token'
+        assert df.headers['Authorization'] == 'Bearer fake-token'
 
     def test_refresh_failure_preserves_new_item_id(self, df):
         accepted = _make_response(202, {})

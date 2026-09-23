@@ -2012,6 +2012,97 @@ class Dataflow:
         return {'message': 'Success', 'content': response.json().get('value', [])}
 
 
+    def _get_accessible_fabric_connections(self) -> Dict:
+        """List every Fabric connection visible to the current principal."""
+        url = f'{self.fabric_api_base_url}/v1/connections'
+        connections = []
+        while url:
+            response = self._request_with_retry('GET', url, headers=self.headers, timeout=60)
+            if response.status_code != 200:
+                return {'message': {'error': response.text,
+                                    'status_code': response.status_code}}
+            page = response.json()
+            connections.extend(page.get('value', []))
+            url = page.get('continuationUri', '')
+            if url and not url.startswith(f'{self.fabric_api_base_url}/v1/connections'):
+                return {'message': {'error': 'Invalid connections continuation URL.'}}
+        return {'message': 'Success', 'content': connections}
+
+
+    @staticmethod
+    def _bind_accessible_connection_ids(
+        definition: Dict, source_document: str, connections: List[Dict]
+    ) -> None:
+        """Bind exact source and destination paths to visible shared connections.
+
+        Standard Gen2 exports can contain stale connection overrides and IDs
+        for personal connections. Resolve literal M connector paths instead.
+        Unsupported or ambiguous paths fail before item creation.
+        """
+        m_string = r'"((?:[^"]|"")*)"'
+        sql_pattern = re.compile(
+            r'Sql\.Database\s*\(\s*' + m_string + r'\s*,\s*' + m_string,
+            re.I,
+        )
+        sql_calls = re.findall(r'\bSql\.Database\s*\(', source_document, re.I)
+        sql_matches = list(sql_pattern.finditer(source_document))
+        if len(sql_calls) != len(sql_matches):
+            raise ValueError('Cannot resolve a dynamic SQL connection path.')
+
+        required = set()
+        for match in sql_matches:
+            server = match.group(1).replace('""', '"')
+            database = match.group(2).replace('""', '"')
+            required.add(('SQL', f'{server};{database}'))
+        if re.search(r'\bFabric\.Warehouse\s*\(', source_document, re.I):
+            required.add(('Warehouse', 'Warehouse'))
+        if re.search(r'\bLakehouse\.Contents\s*\(', source_document, re.I):
+            required.add(('Lakehouse', 'Lakehouse'))
+
+        metadata_part = next(
+            part for part in definition['definition']['parts']
+            if part['path'] == 'queryMetadata.json'
+        )
+        metadata = json.loads(base64.b64decode(metadata_part['payload']))
+        known_kinds = {'sql', 'warehouse', 'lakehouse'}
+        unsupported = {
+            item.get('kind', '') for item in metadata.get('connections', [])
+            if item.get('kind', '').casefold() not in known_kinds
+        }
+        if unsupported:
+            raise ValueError(f'Unsupported connection kinds: {sorted(unsupported)}.')
+        if not required:
+            raise ValueError('No supported source or destination connections found.')
+
+        bound = []
+        shareable_types = {'ShareableCloud', 'OnPremisesGateway',
+                           'VirtualNetworkGateway'}
+        for kind, path in sorted(required):
+            matches = [item for item in connections
+                       if item.get('connectivityType') in shareable_types and
+                       (item.get('connectionDetails') or {}).get('type', '').casefold() == kind.casefold() and
+                       (item.get('connectionDetails') or {}).get('path') == path]
+            if len(matches) != 1 or not matches[0].get('id') or not matches[0].get('gatewayId'):
+                raise ValueError(
+                    f'Expected one accessible {kind} connection for {path}; '
+                    f'found {len(matches)}.'
+                )
+            match = matches[0]
+            bound.append({
+                'kind': kind,
+                'path': path,
+                'connectionId': json.dumps({
+                    'ClusterId': match['gatewayId'],
+                    'DatasourceId': match['id'],
+                }, separators=(',', ':')),
+            })
+
+        metadata['connections'] = bound
+        metadata_part['payload'] = base64.b64encode(
+            json.dumps(metadata, indent=2).encode('utf-8')
+        ).decode('utf-8')
+
+
     @staticmethod
     def _bind_dataflow_connection_ids(definition: Dict, datasources: List[Dict]) -> None:
         """Bind source data-source IDs to exact CI/CD connection paths.
@@ -2125,7 +2216,9 @@ class Dataflow:
         }
 
 
-    def _refresh_upgraded_dataflow(self, result: Dict, workspace_id: str) -> Dict:
+    def _refresh_upgraded_dataflow(
+        self, result: Dict, workspace_id: str, refresh_access_token: str = ''
+    ) -> Dict:
         """Refresh a newly created CI/CD dataflow and wait for its terminal state."""
         if result.get('message') != 'Success':
             return result
@@ -2138,10 +2231,12 @@ class Dataflow:
                 'content': content,
             }
 
+        headers = (dict(self.headers, Authorization=f'Bearer {refresh_access_token}')
+                   if refresh_access_token else self.headers)
         url = (f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}'
                f'/items/{item_id}/jobs/Refresh/instances')
         response = self._request_with_retry(
-            'POST', url, headers=self.headers,
+            'POST', url, headers=headers,
             json={'executionData': {'executeOption': 'ApplyChangesIfNeeded'}},
             timeout=60,
         )
@@ -2174,7 +2269,7 @@ class Dataflow:
                 delay = 5
             time.sleep(min(delay, max(deadline - time.monotonic(), 0)))
             response = self._request_with_retry(
-                'GET', job_url, headers=self.headers, timeout=60,
+                'GET', job_url, headers=headers, timeout=60,
             )
             if response.status_code != 200:
                 return {
@@ -2206,7 +2301,9 @@ class Dataflow:
                 include_schedule: bool = False,
                 compute_engine_settings: Dict = None,
                 source_type: str = 'gen1',
-                refresh: bool = False) -> Dict:
+                refresh: bool = False,
+                use_accessible_connections: bool = False,
+                refresh_access_token: str = '') -> Dict:
         """
         Upgrades a Dataflow Gen1 or Gen2 (standard) to Dataflow Gen2 CI/CD (native Fabric).
 
@@ -2217,7 +2314,8 @@ class Dataflow:
         (mashup.pq, queryMetadata.json, .platform), then creates a new Dataflow Gen2 CI/CD via Fabric API.
         Preserves each configured destination and verifies its workspace, item, and schema
         before creating the new item. Fails closed when preservation cannot be verified.
-        Reuses bound source connection IDs where the data-source path matches exactly.
+        Reuses bound source connection IDs by default, or resolves exact shared
+        connection paths visible to the client when requested.
         Credentials remain in the connection service and are not copied.
         If the dataflow is already CI/CD, it re-creates it with the given display name.
 
@@ -2246,6 +2344,14 @@ class Dataflow:
             source_type (str): Type of source dataflow - 'gen1' or 'gen2'. Defaults to 'gen1'.
             refresh (bool): When True, refresh the new dataflow and wait for completion.
                 Defaults to False.
+            use_accessible_connections (bool): For a standard Gen2 source, bind
+                exact connector paths to shared connections visible to this client
+                instead of copying the source dataflow's connection IDs.
+                Defaults to False.
+            refresh_access_token (str): Optional delegated Fabric user token for
+                the refresh job. Useful when the client uses a service principal,
+                which Fabric does not allow to refresh Dataflow Gen2 CI/CD.
+                The token is used only to start and poll the refresh job.
 
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2 CI/CD.
@@ -2258,6 +2364,9 @@ class Dataflow:
 
         if source_type not in ('gen1', 'gen2'):
             return {'message': 'source_type must be "gen1" or "gen2".', 'content': ''}
+
+        if use_accessible_connections and source_type != 'gen2':
+            return {'message': 'use_accessible_connections requires source_type="gen2".'}
 
         # If no destination workspace provided, use the source workspace
         target_workspace_id = destination_workspace_id if destination_workspace_id != '' else workspace_id
@@ -2292,7 +2401,9 @@ class Dataflow:
 
                 print(f"Successfully created Gen2 CI/CD. New artifact ID: {artifact.get('objectId', 'N/A')}")
                 result = {'message': 'Success', 'content': response, 'warnings': errors}
-                return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
+                return self._refresh_upgraded_dataflow(
+                    result, target_workspace_id, refresh_access_token
+                ) if refresh else result
             else:
                 try:
                     response = json.loads(r.content)
@@ -2308,13 +2419,17 @@ class Dataflow:
             gen2_definition = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
 
             if gen2_definition.get('message') == 'Success':
+                if use_accessible_connections:
+                    return {'message': 'use_accessible_connections requires a standard Gen2 source.'}
                 # Already a CI/CD dataflow - re-create with the definition
                 if display_name == '':
                     display_name = gen2_definition['content'].get('displayName', 'dataflow') + '_cicd'
 
                 print(f"Dataflow is already Gen2 CI/CD. Creating copy as '{display_name}' in workspace {target_workspace_id}...")
                 result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
-                return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
+                return self._refresh_upgraded_dataflow(
+                    result, target_workspace_id, refresh_access_token
+                ) if refresh else result
 
             # Standard Gen2 - fetch from PBI API and convert
             print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
@@ -2376,7 +2491,17 @@ class Dataflow:
 
             # Connection credentials stay in the service. Reuse only the
             # source's bound connection IDs, never credential material.
-            if pbi_content.get('pbi:mashup', {}).get('connectionOverrides'):
+            if use_accessible_connections:
+                accessible_result = self._get_accessible_fabric_connections()
+                if accessible_result.get('message') != 'Success':
+                    return accessible_result
+                try:
+                    self._bind_accessible_connection_ids(
+                        definition, document, accessible_result['content']
+                    )
+                except ValueError as exc:
+                    return {'message': {'error': str(exc)}, 'content': ''}
+            elif pbi_content.get('pbi:mashup', {}).get('connectionOverrides'):
                 datasource_result = self._get_dataflow_pbi_datasources(
                     workspace_id, dataflow_id
                 )
@@ -2392,5 +2517,7 @@ class Dataflow:
             # Create the new Gen2 CI/CD dataflow
             print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")
             result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
-            return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
+            return self._refresh_upgraded_dataflow(
+                result, target_workspace_id, refresh_access_token
+            ) if refresh else result
 
