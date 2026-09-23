@@ -566,6 +566,96 @@ class TestUpgradeDestinationPreservation:
             'connectionId': '{"ClusterId":"gateway-id","DatasourceId":"datasource-id"}',
         }]
 
+    def test_preserves_source_load_enabled_state(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['queriesMetadata']['Orders']['loadEnabled'] = True
+        source['pbi:mashup']['queriesMetadata']['Helper'] = {'queryId': 'helper-id'}
+
+        metadata = df._build_query_metadata(source)
+
+        assert metadata['queriesMetadata']['Orders']['loadEnabled'] is True
+        assert metadata['queriesMetadata']['Helper']['loadEnabled'] is False
+
+
+class TestUpgradeRefresh:
+    def test_refresh_false_does_not_start_job(self, df):
+        df._refresh_upgraded_dataflow = MagicMock()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'definition': {'parts': []}}
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'id': 'new-id'}
+        })
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', source_type='gen2'
+        )
+
+        assert result['message'] == 'Success'
+        df._refresh_upgraded_dataflow.assert_not_called()
+
+    def test_refresh_true_starts_job_for_created_item(self, df):
+        df._refresh_upgraded_dataflow = MagicMock(return_value={
+            'message': 'Success', 'content': {'id': 'new-id'},
+            'refresh': {'status': 'Completed'},
+        })
+        df.get_dataflow_gen2_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'definition': {'parts': []}}
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'id': 'new-id'}
+        })
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', source_type='gen2', refresh=True
+        )
+
+        assert result['refresh']['status'] == 'Completed'
+        assert df._refresh_upgraded_dataflow.call_args.args[1] == 'source-workspace'
+
+    def test_refresh_true_waits_for_completed_job(self, df):
+        accepted = _make_response(202, {})
+        accepted.headers['Location'] = (
+            'https://api.fabric.microsoft.com/v1/workspaces/workspace/'
+            'items/new-id/jobs/instances/job-id'
+        )
+        df._request_with_retry = MagicMock(side_effect=[
+            accepted,
+            _make_response(200, {'id': 'job-id', 'status': 'InProgress'}),
+            _make_response(200, {'id': 'job-id', 'status': 'Completed'}),
+        ])
+        with patch('msdev_kit.fabric.dataflow.time.sleep'):
+            result = df._refresh_upgraded_dataflow(
+                {'message': 'Success', 'content': {'id': 'new-id'}}, 'workspace'
+            )
+
+        assert result['message'] == 'Success'
+        assert result['refresh']['status'] == 'Completed'
+        method, url = df._request_with_retry.call_args_list[0].args
+        assert method == 'POST'
+        assert url.endswith('/items/new-id/jobs/Refresh/instances')
+        assert df._request_with_retry.call_args_list[0].kwargs['json'] == {
+            'executionData': {'executeOption': 'ApplyChangesIfNeeded'}
+        }
+
+    def test_refresh_failure_preserves_new_item_id(self, df):
+        accepted = _make_response(202, {})
+        accepted.headers['Location'] = 'https://api.fabric.microsoft.com/job-id'
+        df._request_with_retry = MagicMock(side_effect=[
+            accepted, _make_response(200, {
+                'id': 'job-id', 'status': 'Failed',
+                'failureReason': {'errorCode': 'CredentialError'},
+            })
+        ])
+        with patch('msdev_kit.fabric.dataflow.time.sleep'):
+            result = df._refresh_upgraded_dataflow(
+                {'message': 'Success', 'content': {'id': 'new-id'}}, 'workspace'
+            )
+
+        assert 'failed' in result['message']['error']
+        assert result['content']['id'] == 'new-id'
+        assert result['refresh']['failureReason']['errorCode'] == 'CredentialError'
+
     def test_standard_warehouse_preserves_append_method(self, df):
         source = _standard_warehouse_definition()
         source['pbi:mashup']['document'] = source['pbi:mashup']['document'].replace(

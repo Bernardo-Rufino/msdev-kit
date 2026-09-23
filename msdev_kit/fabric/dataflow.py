@@ -1949,7 +1949,7 @@ class Dataflow:
             entry = {
                 'queryId': meta.get('queryId', ''),
                 'queryName': meta.get('queryName', name),
-                'loadEnabled': False
+                'loadEnabled': bool(meta.get('loadEnabled', False))
             }
             if meta.get('queryGroupId'):
                 entry['queryGroupId'] = meta['queryGroupId']
@@ -2125,6 +2125,77 @@ class Dataflow:
         }
 
 
+    def _refresh_upgraded_dataflow(self, result: Dict, workspace_id: str) -> Dict:
+        """Refresh a newly created CI/CD dataflow and wait for its terminal state."""
+        if result.get('message') != 'Success':
+            return result
+
+        content = result.get('content') or {}
+        item_id = content.get('id') or content.get('artifactMetadata', {}).get('objectId')
+        if not item_id:
+            return {
+                'message': {'error': 'Created dataflow response has no item ID for refresh.'},
+                'content': content,
+            }
+
+        url = (f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}'
+               f'/items/{item_id}/jobs/Refresh/instances')
+        response = self._request_with_retry(
+            'POST', url, headers=self.headers,
+            json={'executionData': {'executeOption': 'ApplyChangesIfNeeded'}},
+            timeout=60,
+        )
+        if response.status_code != 202:
+            return {
+                'message': {'error': f'Refresh request failed: {response.text}',
+                            'status_code': response.status_code},
+                'content': content,
+            }
+
+        job_url = response.headers.get('Location', '')
+        if not job_url:
+            return {
+                'message': {'error': 'Refresh accepted without a job location.'},
+                'content': content,
+            }
+
+        deadline = time.monotonic() + 3600
+        while True:
+            if time.monotonic() >= deadline:
+                return {
+                    'message': {'error': 'Timed out waiting for dataflow refresh.'},
+                    'content': content,
+                    'refresh': {'status': 'InProgress', 'location': job_url},
+                }
+            delay = response.headers.get('Retry-After', '5')
+            try:
+                delay = max(float(delay), 0)
+            except (TypeError, ValueError):
+                delay = 5
+            time.sleep(min(delay, max(deadline - time.monotonic(), 0)))
+            response = self._request_with_retry(
+                'GET', job_url, headers=self.headers, timeout=60,
+            )
+            if response.status_code != 200:
+                return {
+                    'message': {'error': f'Could not check refresh: {response.text}',
+                                'status_code': response.status_code},
+                    'content': content,
+                    'refresh': {'location': job_url},
+                }
+            job = response.json()
+            status = job.get('status', '')
+            if status == 'Completed':
+                result['refresh'] = job
+                return result
+            if status in ('Failed', 'Cancelled', 'Deduped'):
+                return {
+                    'message': {'error': f'Dataflow refresh {status.lower()}.'},
+                    'content': content,
+                    'refresh': job,
+                }
+
+
     def upgrade_to_gen2_cicd(
                 self,
                 workspace_id: str,
@@ -2134,7 +2205,8 @@ class Dataflow:
                 destination_workspace_id: str = '',
                 include_schedule: bool = False,
                 compute_engine_settings: Dict = None,
-                source_type: str = 'gen1') -> Dict:
+                source_type: str = 'gen1',
+                refresh: bool = False) -> Dict:
         """
         Upgrades a Dataflow Gen1 or Gen2 (standard) to Dataflow Gen2 CI/CD (native Fabric).
 
@@ -2172,6 +2244,8 @@ class Dataflow:
                 allowModernEvaluationEngine (bool). If not provided, derives allowFastCopy from the
                 source dataflow's ppdf:fastCopy setting.
             source_type (str): Type of source dataflow - 'gen1' or 'gen2'. Defaults to 'gen1'.
+            refresh (bool): When True, refresh the new dataflow and wait for completion.
+                Defaults to False.
 
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2 CI/CD.
@@ -2217,7 +2291,8 @@ class Dataflow:
                     print(f"Migration completed with warnings: {errors}")
 
                 print(f"Successfully created Gen2 CI/CD. New artifact ID: {artifact.get('objectId', 'N/A')}")
-                return {'message': 'Success', 'content': response, 'warnings': errors}
+                result = {'message': 'Success', 'content': response, 'warnings': errors}
+                return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
             else:
                 try:
                     response = json.loads(r.content)
@@ -2238,7 +2313,8 @@ class Dataflow:
                     display_name = gen2_definition['content'].get('displayName', 'dataflow') + '_cicd'
 
                 print(f"Dataflow is already Gen2 CI/CD. Creating copy as '{display_name}' in workspace {target_workspace_id}...")
-                return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
+                result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
+                return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
 
             # Standard Gen2 - fetch from PBI API and convert
             print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
@@ -2315,5 +2391,6 @@ class Dataflow:
 
             # Create the new Gen2 CI/CD dataflow
             print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")
-            return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
+            result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
+            return self._refresh_upgraded_dataflow(result, target_workspace_id) if refresh else result
 
