@@ -2003,6 +2003,68 @@ class Dataflow:
         }
 
 
+    def _get_dataflow_pbi_datasources(self, workspace_id: str, dataflow_id: str) -> Dict:
+        """Return the data sources bound to a standard Power BI dataflow."""
+        url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}/datasources'
+        response = self._request_with_retry('GET', url, headers=self.headers)
+        if response.status_code != 200:
+            return {'message': {'error': response.text, 'status_code': response.status_code}}
+        return {'message': 'Success', 'content': response.json().get('value', [])}
+
+
+    @staticmethod
+    def _bind_dataflow_connection_ids(definition: Dict, datasources: List[Dict]) -> None:
+        """Bind source data-source IDs to exact CI/CD connection paths.
+
+        The source export can contain unused connection overrides. Only paths
+        reported by the bound data-source API are retained. Ambiguous or
+        unmatchable data sources fail before the new item is created.
+        """
+        part = next(
+            item for item in definition['definition']['parts']
+            if item['path'] == 'queryMetadata.json'
+        )
+        metadata = json.loads(base64.b64decode(part['payload']))
+        connections = metadata.get('connections', [])
+        bound = []
+        for source in datasources:
+            details = source.get('connectionDetails') or {}
+            source_type = source.get('datasourceType', '').casefold()
+            if source_type == 'sql':
+                server = details.get('server', '')
+                database = details.get('database', '')
+                kind, path = 'sql', f'{server};{database}' if database else server
+            elif source_type == 'extension':
+                kind = str(details.get('extensionDataSourceKind', '')).casefold()
+                path = details.get('extensionDataSourcePath', '')
+            else:
+                kind = source_type
+                path = details.get('path', '')
+
+            matches = [entry for entry in connections
+                       if entry.get('kind', '').casefold() == kind and
+                       entry.get('path') == path]
+            if (not kind or not path or len(matches) != 1 or
+                    not source.get('gatewayId') or not source.get('datasourceId') or
+                    matches[0] in bound):
+                raise ValueError(
+                    f'Cannot identify a unique connection for source data source '
+                    f'{source.get("datasourceId", "unknown")}.')
+            entry = matches[0]
+            entry['connectionId'] = json.dumps({
+                'ClusterId': source['gatewayId'],
+                'DatasourceId': source['datasourceId'],
+            }, separators=(',', ':'))
+            bound.append(entry)
+
+        if connections and not bound:
+            raise ValueError('Source dataflow connections cannot be verified.')
+        metadata['connections'] = bound
+        part['payload'] = base64.b64encode(
+            json.dumps(metadata, indent=2).encode('utf-8')
+        ).decode('utf-8')
+
+
     def _convert_gen2_to_cicd_definition(self, gen2_content: Dict, display_name: str, compute_engine_settings: Dict = None) -> Dict:
         """
         Converts a Gen2 standard dataflow definition (from PBI API) to Gen2 CI/CD definition format (Fabric API).
@@ -2083,6 +2145,8 @@ class Dataflow:
         (mashup.pq, queryMetadata.json, .platform), then creates a new Dataflow Gen2 CI/CD via Fabric API.
         Preserves each configured destination and verifies its workspace, item, and schema
         before creating the new item. Fails closed when preservation cannot be verified.
+        Reuses bound source connection IDs where the data-source path matches exactly.
+        Credentials remain in the connection service and are not copied.
         If the dataflow is already CI/CD, it re-creates it with the given display name.
 
         Gen1 stores data internally and has no Gen2 data destination to reuse.
@@ -2233,6 +2297,21 @@ class Dataflow:
                 map(destination_identity, new_tables)
             ):
                 return {'message': {'error': 'Converted data destination differs from the source.'}, 'content': ''}
+
+            # Connection credentials stay in the service. Reuse only the
+            # source's bound connection IDs, never credential material.
+            if pbi_content.get('pbi:mashup', {}).get('connectionOverrides'):
+                datasource_result = self._get_dataflow_pbi_datasources(
+                    workspace_id, dataflow_id
+                )
+                if datasource_result.get('message') != 'Success':
+                    return datasource_result
+                try:
+                    self._bind_dataflow_connection_ids(
+                        definition, datasource_result['content']
+                    )
+                except ValueError as exc:
+                    return {'message': {'error': str(exc)}, 'content': ''}
 
             # Create the new Gen2 CI/CD dataflow
             print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")

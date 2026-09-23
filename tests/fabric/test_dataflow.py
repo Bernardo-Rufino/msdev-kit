@@ -417,6 +417,17 @@ class TestUpgradeDestinationPreservation:
         df._get_dataflow_pbi_definition = MagicMock(
             return_value={'message': 'Success', 'content': source}
         )
+        df._get_dataflow_pbi_datasources = MagicMock(return_value={
+            'message': 'Success', 'content': [{
+                'datasourceType': 'Extension',
+                'connectionDetails': {
+                    'extensionDataSourceKind': 'Warehouse',
+                    'extensionDataSourcePath': 'Warehouse',
+                },
+                'gatewayId': 'gateway-id',
+                'datasourceId': 'datasource-id',
+            }]
+        })
         df.create_dataflow_gen2_from_definition = MagicMock(
             return_value={'message': 'Success', 'content': {'id': 'new-id'}}
         )
@@ -443,6 +454,13 @@ class TestUpgradeDestinationPreservation:
         m_code = base64.b64decode(mashup['payload']).decode('utf-8')
         assert 'UpdateMethod = [Kind = "Replace"]' in m_code
         assert 'Item = "orders_table"' in m_code
+        metadata = next(part for part in converted['definition']['parts']
+                        if part['path'] == 'queryMetadata.json')
+        connections = json.loads(base64.b64decode(metadata['payload']))['connections']
+        assert connections == [{
+            'path': 'Warehouse', 'kind': 'Warehouse',
+            'connectionId': '{"ClusterId":"gateway-id","DatasourceId":"datasource-id"}',
+        }]
 
     def test_blocks_creation_when_destination_changes(self, df):
         source = _standard_warehouse_definition()
@@ -468,6 +486,85 @@ class TestUpgradeDestinationPreservation:
 
         assert 'destination' in str(result['message']).lower()
         df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_binds_only_source_data_sources_and_drops_unused_overrides(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['connectionOverrides'].insert(
+            0, {'kind': 'SQL', 'path': 'unused-server;unused-database'}
+        )
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df._get_dataflow_pbi_datasources = MagicMock(return_value={
+            'message': 'Success', 'content': [{
+                'datasourceType': 'Extension',
+                'connectionDetails': {
+                    'extensionDataSourceKind': 'Warehouse',
+                    'extensionDataSourcePath': 'Warehouse',
+                },
+                'gatewayId': 'gateway-id', 'datasourceId': 'datasource-id',
+            }]
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock(
+            return_value={'message': 'Success', 'content': {'id': 'new-id'}}
+        )
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert result['message'] == 'Success'
+        definition = df.create_dataflow_gen2_from_definition.call_args.args[2]
+        metadata = next(part for part in definition['definition']['parts']
+                        if part['path'] == 'queryMetadata.json')
+        connections = json.loads(base64.b64decode(metadata['payload']))['connections']
+        assert len(connections) == 1
+        assert connections[0]['kind'] == 'Warehouse'
+        assert 'connectionId' in connections[0]
+
+    def test_blocks_creation_when_source_connection_cannot_be_matched(self, df):
+        source = _standard_warehouse_definition()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df._get_dataflow_pbi_datasources = MagicMock(return_value={
+            'message': 'Success', 'content': [{
+                'datasourceType': 'Extension',
+                'connectionDetails': {
+                    'extensionDataSourceKind': 'Warehouse',
+                    'extensionDataSourcePath': 'different-path',
+                },
+                'gatewayId': 'gateway-id', 'datasourceId': 'datasource-id',
+            }]
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock()
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert 'unique connection' in str(result['message'])
+        df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_binds_sql_server_connection_by_exact_path(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['connectionOverrides'] = [
+            {'kind': 'SQL', 'path': 'server;database'},
+            {'kind': 'SQL', 'path': 'server'},
+        ]
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+
+        df._bind_dataflow_connection_ids(definition, [{
+            'datasourceType': 'Sql',
+            'connectionDetails': {'server': 'server', 'database': 'database'},
+            'gatewayId': 'gateway-id', 'datasourceId': 'datasource-id',
+        }])
+
+        metadata = next(part for part in definition['definition']['parts']
+                        if part['path'] == 'queryMetadata.json')
+        connections = json.loads(base64.b64decode(metadata['payload']))['connections']
+        assert connections == [{
+            'path': 'server;database', 'kind': 'SQL',
+            'connectionId': '{"ClusterId":"gateway-id","DatasourceId":"datasource-id"}',
+        }]
 
     def test_standard_warehouse_preserves_append_method(self, df):
         source = _standard_warehouse_definition()
