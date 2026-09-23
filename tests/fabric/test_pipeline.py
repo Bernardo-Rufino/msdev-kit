@@ -525,6 +525,152 @@ class TestGetPipelineActivities:
         assert 'No pipeline-content.json' in result['message']
 
 
+class TestRecursivePipelineActivities:
+
+    @staticmethod
+    def _mock_graph(pl, definitions):
+        def get_pipeline(workspace_id, pipeline_id):
+            if (workspace_id, pipeline_id) not in definitions:
+                return {'message': 'Not found'}
+            return {
+                'message': 'Success',
+                'content': {'id': pipeline_id, 'displayName': f'Name {pipeline_id}'},
+            }
+
+        def get_definition(workspace_id, pipeline_id):
+            return {
+                'message': 'Success',
+                'content': _make_pipeline_definition(definitions[workspace_id, pipeline_id]),
+            }
+
+        pl.get_pipeline = MagicMock(side_effect=get_pipeline)
+        pl.get_pipeline_definition = MagicMock(side_effect=get_definition)
+
+    def test_default_does_not_follow_invoked_pipeline(self, pl):
+        self._mock_graph(pl, {
+            ('ws', 'root'): [
+                {'name': 'Call child', 'type': 'InvokePipeline',
+                 'typeProperties': {'pipelineId': 'child'}},
+            ],
+            ('ws', 'child'): [
+                {'name': 'Child wait', 'type': 'Wait', 'typeProperties': {}},
+            ],
+        })
+
+        result = pl.get_pipeline_activities('ws', 'root')
+
+        assert result['message'] == 'Success'
+        assert [a['activity_name'] for a in result['content']] == ['Call child']
+        assert 'workspace_id' not in result['content'][0]
+        pl.get_pipeline_definition.assert_called_once_with('ws', 'root')
+
+    def test_recurses_across_workspaces_and_deduplicates_cycles(self, pl):
+        self._mock_graph(pl, {
+            ('ws', 'root'): [
+                {'name': 'Root wait', 'type': 'Wait', 'typeProperties': {}},
+                {'name': 'Call child', 'type': 'InvokePipeline',
+                 'typeProperties': {'pipelineId': 'child', 'workspaceId': 'other'}},
+                {'name': 'Call child again', 'type': 'InvokePipeline',
+                 'typeProperties': {'pipelineId': 'child', 'workspaceId': 'other'}},
+            ],
+            ('other', 'child'): [
+                {'name': 'Child wait', 'type': 'Wait', 'typeProperties': {}},
+                {'name': 'Call grandchild', 'type': 'ExecutePipeline',
+                 'typeProperties': {'pipeline': {
+                     'referenceName': 'grandchild', 'type': 'PipelineReference'
+                 }}},
+            ],
+            ('other', 'grandchild'): [
+                {'name': 'Grandchild wait', 'type': 'Wait', 'typeProperties': {}},
+                {'name': 'Call root', 'type': 'InvokePipeline',
+                 'typeProperties': {'pipelineId': 'root', 'workspaceId': 'ws'}},
+            ],
+        })
+
+        result = pl.get_pipeline_activities('ws', 'root', recursive=True)
+
+        assert result['message'] == 'Success'
+        assert [a['activity_name'] for a in result['content']] == [
+            'Root wait', 'Call child', 'Call child again',
+            'Child wait', 'Call grandchild', 'Grandchild wait', 'Call root',
+        ]
+        assert [(a['workspace_id'], a['pipeline_id']) for a in result['content']] == [
+            ('ws', 'root'), ('ws', 'root'), ('ws', 'root'),
+            ('other', 'child'), ('other', 'child'),
+            ('other', 'grandchild'), ('other', 'grandchild'),
+        ]
+        assert pl.get_pipeline_definition.call_count == 3
+        assert result['content'][4]['typeProperties']['object_name'] == 'Name grandchild'
+
+    def test_child_failure_is_not_reported_as_complete(self, pl):
+        self._mock_graph(pl, {
+            ('ws', 'root'): [
+                {'name': 'Call missing', 'type': 'InvokePipeline',
+                 'typeProperties': {'pipelineId': 'missing'}},
+            ],
+        })
+        pl.list_pipelines = MagicMock(return_value={'message': 'Success', 'content': []})
+
+        result = pl.get_pipeline_activities('ws', 'root', recursive=True)
+
+        assert result['message']['error'].startswith('Could not read invoked pipeline missing')
+        assert 'Pipeline not found' in result['message']['cause']
+        assert result['content'] == ''
+
+    def test_recursive_mode_finds_calls_inside_control_flow(self, pl):
+        self._mock_graph(pl, {
+            ('ws', 'root'): [
+                {'name': 'Branch', 'type': 'IfCondition', 'typeProperties': {
+                    'ifTrueActivities': [
+                        {'name': 'Loop', 'type': 'ForEach', 'typeProperties': {
+                            'activities': [
+                                {'name': 'Call child', 'type': 'ExecutePipeline',
+                                 'typeProperties': {'pipeline': {
+                                     'referenceName': 'child',
+                                     'type': 'PipelineReference',
+                                 }}},
+                            ],
+                        }},
+                    ],
+                    'ifFalseActivities': [],
+                }},
+            ],
+            ('ws', 'child'): [
+                {'name': 'Child work', 'type': 'Wait', 'typeProperties': {}},
+            ],
+        })
+
+        result = pl.get_pipeline_activities('ws', 'root', recursive=True)
+
+        assert result['message'] == 'Success'
+        assert [a['activity_name'] for a in result['content']] == [
+            'Branch', 'Loop', 'Call child', 'Child work',
+        ]
+        assert result['content'][2]['typeProperties']['object_name'] == 'Name child'
+        assert pl.get_pipeline_definition.call_count == 2
+
+    @patch('msdev_kit.fabric.pipeline.Dataflow')
+    def test_same_object_id_in_different_workspaces_resolves_separately(self, MockDataflow, pl):
+        self._mock_graph(pl, {
+            ('ws', 'root'): [
+                {'name': 'Local dataflow', 'type': 'RefreshDataflow',
+                 'typeProperties': {'dataflowId': 'shared', 'workspaceId': 'ws'}},
+                {'name': 'Remote dataflow', 'type': 'RefreshDataflow',
+                 'typeProperties': {'dataflowId': 'shared', 'workspaceId': 'other'}},
+            ],
+        })
+        MockDataflow.return_value.get_dataflow_name.side_effect = (
+            lambda workspace_id, _: workspace_id
+        )
+
+        result = pl.get_pipeline_activities('ws', 'root')
+
+        assert [a['typeProperties']['object_name'] for a in result['content']] == [
+            'ws', 'other',
+        ]
+        assert MockDataflow.return_value.get_dataflow_name.call_count == 2
+
+
 # ===========================================================================
 # find_pipelines_by_dataflow — ID and name resolution
 # ===========================================================================
