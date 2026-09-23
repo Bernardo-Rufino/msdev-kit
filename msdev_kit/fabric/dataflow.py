@@ -1450,11 +1450,15 @@ class Dataflow:
                 default_dest = dq
                 break
 
-        if default_dest:
-            body = default_dest['body']
-            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-            lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
-            for q in data_queries:
+        dest_map = {dq['name']: dq for dq in dest_queries}
+        for q in data_queries:
+            annotation = q.get('annotation', '')
+            if 'BindToDefaultDestination' in annotation:
+                if not default_dest:
+                    continue
+                body = default_dest['body']
+                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
                 destinations.append({
                     'name': q['name'],
                     'destination_type': 'Lakehouse',
@@ -1464,42 +1468,39 @@ class Dataflow:
                     'mapping_type': 'Automatic',
                     'columns': []
                 })
-        else:
-            # Per-query _DataDestination pattern
-            dest_map = {dq['name']: dq for dq in dest_queries}
-            for q in data_queries:
-                dest_key = q['name'] + '_DataDestination'
-                if dest_key not in dest_map:
-                    continue
-                body = dest_map[dest_key]['body']
-                annotation = q.get('annotation', '')
-                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-                schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
-                mapping_type = self._parse_mapping_type(annotation)
-                columns = self._parse_column_mappings(annotation)
+                continue
 
-                if 'Lakehouse.Contents' in body:
-                    lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
-                    destinations.append({
-                        'name': q['name'],
-                        'destination_type': 'Lakehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': lh_match.group(1) if lh_match else '',
-                        'sql_schema': schema_match.group(1) if schema_match else None,
-                        'mapping_type': mapping_type,
-                        'columns': columns
-                    })
-                elif 'Fabric.Warehouse' in body:
-                    wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
-                    destinations.append({
-                        'name': q['name'],
-                        'destination_type': 'Warehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': wh_match.group(1) if wh_match else '',
-                        'sql_schema': schema_match.group(1) if schema_match else 'dbo',
-                        'mapping_type': mapping_type,
-                        'columns': columns
-                    })
+            dest_key = q['name'] + '_DataDestination'
+            if dest_key not in dest_map:
+                continue
+            body = dest_map[dest_key]['body']
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
+            mapping_type = self._parse_mapping_type(annotation)
+            columns = self._parse_column_mappings(annotation)
+
+            if 'Lakehouse.Contents' in body:
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'name': q['name'],
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else None,
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
+            elif 'Fabric.Warehouse' in body:
+                wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'name': q['name'],
+                    'destination_type': 'Warehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': wh_match.group(1) if wh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else 'dbo',
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
 
         return {'message': 'Success', 'content': destinations}
 
@@ -1553,25 +1554,27 @@ class Dataflow:
                     'columns': columns
                 })
 
-        # Check for DefaultDestination (Lakehouse with BindToDefaultDestination)
-        if not destinations:
-            default_match = re.search(r'shared\s+DefaultDestination\s*=\s*let\b([\s\S]*?);', m_code)
-            if default_match:
-                body = default_match.group(1)
-                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+        # Default-bound queries may coexist with per-query destinations.
+        default_match = re.search(r'shared\s+DefaultDestination\s*=\s*let\b([\s\S]*?);', m_code)
+        if default_match:
+            body = default_match.group(1)
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+            per_query_names = {row['name'] for row in destinations}
 
-                bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
-                for bind_match in re.finditer(bind_pattern, m_code):
-                    destinations.append({
-                        'name': bind_match.group(1),
-                        'destination_type': 'Lakehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': lh_match.group(1) if lh_match else '',
-                        'sql_schema': None,
-                        'mapping_type': 'Automatic',
-                        'columns': []
-                    })
+            bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
+            for bind_match in re.finditer(bind_pattern, m_code):
+                if bind_match.group(1) in per_query_names:
+                    continue
+                destinations.append({
+                    'name': bind_match.group(1),
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': None,
+                    'mapping_type': 'Automatic',
+                    'columns': []
+                })
 
         return {'message': 'Success', 'content': destinations}
 

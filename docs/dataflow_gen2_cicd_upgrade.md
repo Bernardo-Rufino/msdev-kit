@@ -25,6 +25,9 @@ Fabric currently rejects a Dataflow Gen2 CI/CD refresh initiated by an SPN with
 poll the refresh job. The user must have Member or higher workspace access and
 access to every connection used by the dataflow. Connection visibility or an
 `Online` connection test alone does not prove that refresh will succeed.
+The interactive login is requested in the configured `TENANT_ID`, which also
+matters when the user is a guest whose home tenant differs from the workspace
+tenant.
 
 ## Prerequisites
 

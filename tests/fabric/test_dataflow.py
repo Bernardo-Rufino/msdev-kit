@@ -410,7 +410,74 @@ def _standard_warehouse_definition():
     }
 
 
+def _mixed_destination_definition():
+    source = _standard_warehouse_definition()
+    source['pbi:mashup']['document'] += (
+        '[BindToDefaultDestination = true]\r\n'
+        'shared Returns = let\r\n'
+        '  Source = #table({"A"}, {})\r\n'
+        'in\r\n'
+        '  Source;\r\n'
+        'shared DefaultDestination = let\r\n'
+        '  Source = Lakehouse.Contents(),\r\n'
+        '  Workspace = Source{[workspaceId = "destination-workspace"]}[Data],\r\n'
+        '  Lakehouse = Workspace{[lakehouseId = "lakehouse-id"]}[Data]\r\n'
+        'in\r\n'
+        '  Lakehouse;\r\n'
+    )
+    source['pbi:mashup']['queriesMetadata']['Returns'] = {'queryId': 'returns-id'}
+    source['pbi:mashup']['connectionOverrides'].append({
+        'path': 'Lakehouse', 'kind': 'Lakehouse',
+    })
+    return source
+
+
 class TestUpgradeDestinationPreservation:
+    def test_mixed_default_and_per_query_destinations(self, df):
+        source = _mixed_destination_definition()
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+
+        source_rows = df._get_data_destinations_standard(source)['content']
+        converted_rows = df._get_data_destinations_cicd(definition)['content']
+        expected = {
+            ('Orders', 'Warehouse', 'warehouse-id'),
+            ('Returns', 'Lakehouse', 'lakehouse-id'),
+        }
+        assert {(r['name'], r['destination_type'], r['item_id'])
+                for r in source_rows} == expected
+        assert {(r['name'], r['destination_type'], r['item_id'])
+                for r in converted_rows} == expected
+
+    def test_upgrade_accepts_mixed_destinations_when_preserved(self, df):
+        source = _mixed_destination_definition()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={
+            'message': 'not native',
+        })
+        df._get_dataflow_pbi_definition = MagicMock(return_value={
+            'message': 'Success', 'content': source,
+        })
+        df._get_accessible_fabric_connections = MagicMock(return_value={
+            'message': 'Success', 'content': [
+                {'id': 'warehouse-connection', 'gatewayId': 'gateway',
+                 'connectivityType': 'ShareableCloud',
+                 'connectionDetails': {'type': 'Warehouse', 'path': 'Warehouse'}},
+                {'id': 'lakehouse-connection', 'gatewayId': 'gateway',
+                 'connectivityType': 'ShareableCloud',
+                 'connectionDetails': {'type': 'Lakehouse', 'path': 'Lakehouse'}},
+            ],
+        })
+        df.create_dataflow_gen2_from_definition = MagicMock(return_value={
+            'message': 'Success', 'content': {'id': 'new-id'},
+        })
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', source_type='gen2',
+            use_accessible_connections=True,
+        )
+
+        assert result['message'] == 'Success'
+        df.create_dataflow_gen2_from_definition.assert_called_once()
+
     def test_standard_warehouse_reuses_destination_and_replace_settings(self, df):
         source = _standard_warehouse_definition()
         df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})

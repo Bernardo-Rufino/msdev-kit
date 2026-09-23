@@ -114,7 +114,8 @@ class TestInteractiveAuth:
             allow_unencrypted_storage=False
         )
         mock_cred_cls.assert_called_once_with(
-            cache_persistence_options=mock_cache_options
+            cache_persistence_options=mock_cache_options,
+            tenant_id="tenant",
         )
 
     @patch("msdev_kit.auth.TokenCachePersistenceOptions")
