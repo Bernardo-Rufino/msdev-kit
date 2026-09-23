@@ -245,7 +245,13 @@ result = df.upgrade_to_gen2_cicd(
 | `get_workspace_data_destinations(workspace_id, max_workers=4)` | Inspect every dataflow, return its destination details, and save destination-only rows as a workbook under `data/dataflows`. The inventory is paced at 200 requests per minute and retries 429 responses. |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, ...)` | Change data destination (Lakehouse/Warehouse). Modes: `preview`, `replace`, `create`. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, ...)` | Create a new Gen2 CI/CD dataflow with a different data destination. |
-| `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. |
+| `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 dataflow to Gen2 CI/CD. For standard Gen2, preserve and verify configured data destinations before creating the new item. |
+
+For a standard Gen2 source, the upgrade keeps each destination's workspace,
+item, table, and write method. It returns an error without creating a new item
+if it cannot verify destination preservation. A CI/CD source is copied from its
+definition without retargeting destination references. Gen1 uses its own
+internal storage and has no Gen2 data destination to reuse.
 
 #### Inventory workspace data destinations
 

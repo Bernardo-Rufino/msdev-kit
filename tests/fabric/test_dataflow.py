@@ -8,6 +8,7 @@ Usage:
     pytest tests/test_dataflow.py -v
 """
 
+import base64
 import json
 from threading import Barrier
 import pandas as pd
@@ -374,3 +375,179 @@ in
             'mapping_type': 'Automatic',
             'columns': [],
         }]
+
+
+def _standard_warehouse_definition():
+    document = (
+        'section Section1;\r\n'
+        'shared Orders = let\r\n  Source = #table({"A", "B"}, {})\r\n'
+        'in\r\n  Source;\r\n'
+        'shared Orders_DataDestination = let\r\n'
+        '  Pattern = Fabric.Warehouse(),\r\n'
+        '  Workspace = Pattern{[workspaceId = "destination-workspace"]}[Data],\r\n'
+        '  Warehouse = Workspace{[warehouseId = "warehouse-id"]}[Data],\r\n'
+        '  TableNavigation = Warehouse{[Item = "orders_table", Schema = "sales"]}?[Data]?,\r\n'
+        '  Table = NavigationTable.CreateTableOnDemand(TableNavigation, 1)\r\n'
+        'in\r\n  Table;\r\n'
+        'shared Orders_WriteToDataDestination = let\r\n'
+        '  Write = Pipeline.ExecuteAction(ValueAction.WithTransaction('
+        '[Target = Orders_DataDestination], (txn) => {'
+        'TableAction.DeleteRows(txn[Target]), '
+        '() => TableAction.InsertRows(txn[Target], Orders_TransformForWriteToDataDestination)'
+        '}))\r\n'
+        'in\r\n  Write;\r\n'
+        'shared Orders_TransformForWriteToDataDestination = let\r\n'
+        '  SourceTable = Table.SelectColumns(Orders, {"A", "B"})\r\n'
+        'in\r\n  SourceTable;\r\n'
+    )
+    return {
+        'name': 'Source dataflow',
+        'pbi:mashup': {
+            'document': document,
+            'queriesMetadata': {'Orders': {'queryId': 'query-id'}},
+            'connectionOverrides': [{'path': 'Warehouse', 'kind': 'Warehouse'}],
+        },
+    }
+
+
+class TestUpgradeDestinationPreservation:
+    def test_standard_warehouse_reuses_destination_and_replace_settings(self, df):
+        source = _standard_warehouse_definition()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df.create_dataflow_gen2_from_definition = MagicMock(
+            return_value={'message': 'Success', 'content': {'id': 'new-id'}}
+        )
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', destination_workspace_id='new-workspace',
+            source_type='gen2',
+        )
+
+        assert result['message'] == 'Success'
+        create_args = df.create_dataflow_gen2_from_definition.call_args.args
+        assert create_args[0] == 'new-workspace'
+        converted = create_args[2]
+        destinations = df._get_data_destinations_cicd(converted)['content']
+        assert destinations == [{
+            'name': 'Orders', 'destination_type': 'Warehouse',
+            'workspace_id': 'destination-workspace', 'item_id': 'warehouse-id',
+            'sql_schema': 'sales', 'mapping_type': 'Manual',
+            'columns': [{'source': 'A', 'destination': 'A'},
+                        {'source': 'B', 'destination': 'B'}],
+        }]
+        mashup = next(part for part in converted['definition']['parts']
+                      if part['path'] == 'mashup.pq')
+        m_code = base64.b64decode(mashup['payload']).decode('utf-8')
+        assert 'UpdateMethod = [Kind = "Replace"]' in m_code
+        assert 'Item = "orders_table"' in m_code
+
+    def test_blocks_creation_when_destination_changes(self, df):
+        source = _standard_warehouse_definition()
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        real_convert = df._convert_gen2_to_cicd_definition
+
+        def wrong_destination(content, name, settings):
+            converted = real_convert(content, name, settings)
+            mashup = next(part for part in converted['definition']['parts']
+                          if part['path'] == 'mashup.pq')
+            m_code = base64.b64decode(mashup['payload']).decode('utf-8')
+            m_code = m_code.replace('warehouse-id', 'wrong-warehouse')
+            mashup['payload'] = base64.b64encode(m_code.encode('utf-8')).decode('utf-8')
+            return converted
+
+        df._convert_gen2_to_cicd_definition = wrong_destination
+        df.create_dataflow_gen2_from_definition = MagicMock()
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert 'destination' in str(result['message']).lower()
+        df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_standard_warehouse_preserves_append_method(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['document'] = source['pbi:mashup']['document'].replace(
+            'TableAction.DeleteRows(txn[Target]), ', ''
+        )
+
+        converted = df._convert_gen2_to_cicd_definition(source, 'copy')
+        mashup = next(part for part in converted['definition']['parts']
+                      if part['path'] == 'mashup.pq')
+        m_code = base64.b64decode(mashup['payload']).decode('utf-8')
+
+        assert 'UpdateMethod = [Kind = "Append"]' in m_code
+        assert df._get_data_destinations_cicd(converted)['content'][0]['item_id'] == 'warehouse-id'
+
+    def test_blocks_unknown_source_destination_before_create(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['document'] = source['pbi:mashup']['document'].replace(
+            'Fabric.Warehouse()', 'Unknown.Destination()'
+        )
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df.create_dataflow_gen2_from_definition = MagicMock()
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert 'destination' in str(result['message']).lower()
+        df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_blocks_unresolved_source_destination_id(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['document'] = source['pbi:mashup']['document'].replace(
+            'warehouseId = "warehouse-id"', 'warehouseId = ""'
+        )
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df.create_dataflow_gen2_from_definition = MagicMock()
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert 'destination' in str(result['message']).lower()
+        df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_blocks_unrecognized_column_transform(self, df):
+        source = _standard_warehouse_definition()
+        source['pbi:mashup']['document'] = source['pbi:mashup']['document'].replace(
+            'Table.SelectColumns(Orders, {"A", "B"})',
+            'Table.RenameColumns(Orders, {{"A", "renamed"}})'
+        )
+        df.get_dataflow_gen2_definition = MagicMock(return_value={'message': 'not native'})
+        df._get_dataflow_pbi_definition = MagicMock(
+            return_value={'message': 'Success', 'content': source}
+        )
+        df.create_dataflow_gen2_from_definition = MagicMock()
+
+        result = df.upgrade_to_gen2_cicd('source-workspace', 'source-id', source_type='gen2')
+
+        assert 'mapping' in str(result['message']).lower()
+        df.create_dataflow_gen2_from_definition.assert_not_called()
+
+    def test_native_gen2_copy_uses_source_definition_without_retargeting(self, df):
+        definition = {'definition': {'parts': [{'path': 'mashup.pq', 'payload': 'unchanged'}]},
+                      'displayName': 'native'}
+        df.get_dataflow_gen2_definition = MagicMock(
+            return_value={'message': 'Success', 'content': definition}
+        )
+        df.create_dataflow_gen2_from_definition = MagicMock(
+            return_value={'message': 'Success', 'content': {'id': 'new-id'}}
+        )
+
+        result = df.upgrade_to_gen2_cicd(
+            'source-workspace', 'source-id', destination_workspace_id='new-workspace',
+            source_type='gen2',
+        )
+
+        assert result['message'] == 'Success'
+        df.create_dataflow_gen2_from_definition.assert_called_once_with(
+            'new-workspace', 'native_cicd', definition
+        )

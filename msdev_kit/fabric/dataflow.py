@@ -817,10 +817,15 @@ class Dataflow:
         return {'type': 'unknown', 'workspace_id': '', 'item_id': ''}
 
 
-    def _build_warehouse_annotation(self, query_name: str, columns: List[str]) -> str:
-        """Build the [DataDestinations = {...}] M annotation for a warehouse destination with manual column mappings."""
+    def _build_warehouse_annotation(self, query_name: str, columns: List[str],
+                                    update_method: str = 'Replace') -> str:
+        """Build a manual destination annotation with the source write method."""
+        def escape_m(value: str) -> str:
+            return value.replace('"', '""')
+
         mappings = ', '.join(
-            f'[SourceColumnName = "{col}", DestinationColumnName = "{col}"]'
+            f'[SourceColumnName = "{escape_m(col)}", '
+            f'DestinationColumnName = "{escape_m(col)}"]'
             for col in columns
         )
         return (
@@ -828,7 +833,7 @@ class Dataflow:
             f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
             f'Settings = [Kind = "Manual", AllowCreation = true, '
             f'ColumnSettings = [Mappings = {{{mappings}}}], '
-            f'DynamicSchema = false, UpdateMethod = [Kind = "Replace"], '
+            f'DynamicSchema = false, UpdateMethod = [Kind = "{update_method}"], '
             f'TypeSettings = [Kind = "Table"]]]}}]'
         )
 
@@ -1841,11 +1846,72 @@ class Dataflow:
 
         # 5. Add [DataDestinations] annotation before queries that have destinations
         for query_name in dest_queries:
-            dd_annotation = (
-                f'[DataDestinations = {{[Definition = [Kind = "Reference", '
-                f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
-                f'Settings = [Kind = "Automatic", TypeSettings = [Kind = "Table"]]]}}]\n'
+            if re.search(
+                rf'\[(?:DataDestinations|BindToDefaultDestination)\s*='
+                rf'[^\n]*\]\r?\n\s*shared\s+{re.escape(query_name)}\s*=',
+                result,
+            ):
+                continue
+
+            writer_match = re.search(
+                rf'shared\s+{re.escape(query_name)}_WriteToDataDestination\s*='
+                rf'\s*let\b([\s\S]*?);\r?\n',
+                document,
             )
+            writer = writer_match.group(1) if writer_match else ''
+            actions = set(re.findall(r'TableAction\.(\w+)', writer))
+            if (f'Target = {query_name}_DataDestination' not in writer or
+                    'InsertRows' not in actions or
+                    actions - {'DeleteRows', 'InsertRows'}):
+                raise ValueError(f'Cannot determine write method for {query_name}.')
+            update_method = 'Replace' if 'TableAction.DeleteRows' in writer else 'Append'
+
+            dest_match = re.search(
+                rf'shared\s+{re.escape(query_name)}_DataDestination\s*='
+                rf'\s*let\b([\s\S]*?);\r?\n',
+                document,
+            )
+            dest_body = dest_match.group(1) if dest_match else ''
+            is_warehouse = 'Fabric.Warehouse' in dest_body
+            is_lakehouse = 'Lakehouse.Contents' in dest_body
+            if not (is_warehouse or is_lakehouse):
+                raise ValueError(f'Cannot identify data destination for {query_name}.')
+
+            if is_lakehouse and update_method == 'Replace':
+                dd_annotation = (
+                    f'[DataDestinations = {{[Definition = [Kind = "Reference", '
+                    f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
+                    f'Settings = [Kind = "Automatic", TypeSettings = [Kind = "Table"]]]}}]\n'
+                )
+            else:
+                transform_match = re.search(
+                    rf'shared\s+{re.escape(query_name)}_TransformForWriteToDataDestination'
+                    rf'\s*=\s*let\b([\s\S]*?);\r?\n',
+                    document,
+                )
+                transform = transform_match.group(1) if transform_match else ''
+                columns_match = re.fullmatch(
+                    rf'\s*SourceTable\s*=\s*Table\.SelectColumns\('
+                    rf'\s*{re.escape(query_name)}\s*,\s*\{{([^}}]*)\}}\s*\)'
+                    rf'\s*in\s*SourceTable\s*',
+                    transform,
+                )
+                column_list = columns_match.group(1) if columns_match else ''
+                if not re.fullmatch(
+                    r'\s*"(?:[^"]|"")*"(?:\s*,\s*"(?:[^"]|"")*")*\s*',
+                    column_list,
+                ):
+                    raise ValueError(f'Cannot preserve column mapping for {query_name}.')
+                columns = (
+                    [column.replace('""', '"') for column in
+                     re.findall(r'"((?:[^"]|"")*)"', column_list)]
+                    if columns_match else []
+                )
+                if not columns:
+                    raise ValueError(f'Cannot preserve column mapping for {query_name}.')
+                dd_annotation = self._build_warehouse_annotation(
+                    query_name, columns, update_method
+                ) + '\n'
             result = result.replace(f'shared {query_name} =', f'{dd_annotation}shared {query_name} =')
 
         # 6. Simplify DataDestination queries - remove NavigationTable.CreateTableOnDemand wrapper
@@ -2015,7 +2081,11 @@ class Dataflow:
 
         For Gen2 (standard): Fetches the definition via PBI API and converts it to the CI/CD format
         (mashup.pq, queryMetadata.json, .platform), then creates a new Dataflow Gen2 CI/CD via Fabric API.
+        Preserves each configured destination and verifies its workspace, item, and schema
+        before creating the new item. Fails closed when preservation cannot be verified.
         If the dataflow is already CI/CD, it re-creates it with the given display name.
+
+        Gen1 stores data internally and has no Gen2 data destination to reuse.
 
         Note: This method creates a NEW Dataflow Gen2 CI/CD item. The original dataflow is NOT
         deleted automatically. You can use delete_dataflow() to remove the original after verifying
@@ -2119,11 +2189,50 @@ class Dataflow:
             if display_name == '':
                 display_name = pbi_content.get('name', 'dataflow') + '_cicd'
 
-            # Convert PBI API definition to CI/CD format
-            definition = self._convert_gen2_to_cicd_definition(pbi_content, display_name, compute_engine_settings)
+            # Convert PBI API definition to CI/CD format. Do not create a dataflow
+            # when its destination cannot be carried into the new definition.
+            try:
+                definition = self._convert_gen2_to_cicd_definition(
+                    pbi_content, display_name, compute_engine_settings
+                )
+            except ValueError as exc:
+                return {'message': {'error': str(exc)}, 'content': ''}
 
             if definition is None:
                 return {'message': {'error': 'Could not extract mashup document from dataflow. The dataflow may not contain any queries.', 'content': ''}}
+
+            source_destinations = self._get_data_destinations_standard(pbi_content)
+            new_destinations = self._get_data_destinations_cicd(definition)
+            if (source_destinations.get('message') != 'Success' or
+                    new_destinations.get('message') != 'Success'):
+                return {'message': {'error': 'Could not verify data destination preservation.'}, 'content': ''}
+
+            document = pbi_content.get('pbi:mashup', {}).get('document', '')
+            source_tables = source_destinations['content']
+            new_tables = new_destinations['content']
+            declared_writers = len(re.findall(
+                r'shared\s+(?:#"[^"]+_WriteToDataDestination"|'
+                r'\w+_WriteToDataDestination)\s*=', document
+            ))
+            declared_default_binds = len(re.findall(
+                r'\[BindToDefaultDestination\s*=\s*true\]', document, re.I
+            ))
+            if (declared_writers + declared_default_binds > len(source_tables) or
+                    (('_DataDestination' in document or
+                      'DefaultDestination' in document) and not source_tables) or
+                    any(not row['workspace_id'] or not row['item_id'] for row in source_tables)):
+                return {'message': {'error': 'Source data destination cannot be verified.'}, 'content': ''}
+
+            def destination_identity(row):
+                return (
+                    row['name'], row['destination_type'], row['workspace_id'],
+                    row['item_id'], row['sql_schema'],
+                )
+
+            if sorted(map(destination_identity, source_tables)) != sorted(
+                map(destination_identity, new_tables)
+            ):
+                return {'message': {'error': 'Converted data destination differs from the source.'}, 'content': ''}
 
             # Create the new Gen2 CI/CD dataflow
             print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")
