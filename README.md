@@ -257,6 +257,8 @@ For service principal creation of a standard Gen2 dataflow, use a delegated
 Fabric user token for refresh. Fabric does not allow the service principal to
 run the Dataflow Gen2 CI/CD refresh job. The delegated token is used only for
 the refresh request and polling. Connection credentials are not copied.
+See the [complete setup and runnable example](docs/dataflow_gen2_cicd_upgrade.md)
+before running this against an existing data destination.
 
 ```python
 spn_auth = Auth(tenant_id, client_id, client_secret)
