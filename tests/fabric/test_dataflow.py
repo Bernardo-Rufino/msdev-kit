@@ -752,6 +752,40 @@ class TestUpgradeDestinationPreservation:
         with pytest.raises(ValueError, match='dynamic SQL'):
             df._bind_accessible_connection_ids(definition, document, [])
 
+    def test_rejects_sql_database_with_dynamic_suffix(self, df):
+        source = _standard_warehouse_definition()
+        document = source['pbi:mashup']['document'].replace(
+            '#table({"A", "B"}, {})',
+            'Sql.Database("server", "database" & Suffix)',
+        )
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+
+        with pytest.raises(ValueError, match='dynamic SQL'):
+            df._bind_accessible_connection_ids(definition, document, [])
+
+    def test_accepts_sql_database_with_literal_options_argument(self, df):
+        source = _standard_warehouse_definition()
+        document = source['pbi:mashup']['document'].replace(
+            '#table({"A", "B"}, {})',
+            'Sql.Database("server", "database", [CreateNavigationProperties=false])',
+        )
+        definition = df._convert_gen2_to_cicd_definition(source, 'copy')
+        available = [
+            {'id': 'sql-id', 'gatewayId': 'shared-gateway',
+             'connectivityType': 'ShareableCloud',
+             'connectionDetails': {'type': 'SQL', 'path': 'server;database'}},
+            {'id': 'warehouse-id', 'gatewayId': 'shared-gateway',
+             'connectivityType': 'ShareableCloud',
+             'connectionDetails': {'type': 'Warehouse', 'path': 'Warehouse'}},
+        ]
+
+        df._bind_accessible_connection_ids(definition, document, available)
+
+        part = next(p for p in definition['definition']['parts']
+                    if p['path'] == 'queryMetadata.json')
+        paths = {c['path'] for c in json.loads(base64.b64decode(part['payload']))['connections']}
+        assert paths == {'server;database', 'Warehouse'}
+
 
 class TestUpgradeRefresh:
     def test_refresh_false_does_not_start_job(self, df):

@@ -2049,7 +2049,8 @@ class Dataflow:
         """
         m_string = r'"((?:[^"]|"")*)"'
         sql_pattern = re.compile(
-            r'Sql\.Database\s*\(\s*' + m_string + r'\s*,\s*' + m_string,
+            r'Sql\.Database\s*\(\s*' + m_string + r'\s*,\s*' +
+            m_string + r'\s*(?=[,)])',
             re.I,
         )
         sql_calls = re.findall(r'\bSql\.Database\s*\(', source_document, re.I)
