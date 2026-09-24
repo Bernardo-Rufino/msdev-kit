@@ -62,9 +62,12 @@ class Auth:
             raise ValueError(
                 f"Invalid service specified. Choose one of: {', '.join(_SCOPES)}"
             )
-        credential = InteractiveBrowserCredential(
-            cache_persistence_options=TokenCachePersistenceOptions(
+        options = {
+            "cache_persistence_options": TokenCachePersistenceOptions(
                 allow_unencrypted_storage=allow_unencrypted_storage
             )
-        )
+        }
+        if self.tenant_id:
+            options["tenant_id"] = self.tenant_id
+        credential = InteractiveBrowserCredential(**options)
         return credential.get_token(scope).token
