@@ -43,6 +43,52 @@ class Pipeline:
             **kwargs,
         )
 
+    def _finish_definition_operation(self, response: requests.Response, result: bool) -> Dict:
+        """Wait for a Fabric definition LRO before reporting success."""
+        operation_id = response.headers.get('x-ms-operation-id')
+        if not operation_id:
+            return {'message': 'Missing operation ID for accepted definition request.'}
+        state_url = f'{self.fabric_api_base_url}/v1/operations/{operation_id}'
+        deadline = time.monotonic() + 600
+        delay = max(1, int(response.headers.get('Retry-After', 1)))
+
+        while time.monotonic() < deadline:
+            time.sleep(min(delay, max(0, deadline - time.monotonic())))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                state_response = self._request_with_retry(
+                    'GET', state_url, headers=self.headers, timeout=remaining
+                )
+            except requests.Timeout:
+                break
+            if state_response.status_code != 200:
+                return {'message': {'error': state_response.text,
+                                    'status_code': state_response.status_code}}
+            state = state_response.json()
+            if state.get('status') == 'Failed':
+                return {'message': {'error': state.get('error', state)}}
+            if state.get('status') == 'Succeeded':
+                if not result:
+                    return {'message': 'Success', 'content': {}}
+                result_url = f'{state_url}/result'
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    result_response = self._request_with_retry(
+                        'GET', result_url, headers=self.headers, timeout=remaining
+                    )
+                except requests.Timeout:
+                    break
+                if result_response.status_code == 200:
+                    return {'message': 'Success', 'content': result_response.json()}
+                return {'message': {'error': result_response.text,
+                                    'status_code': result_response.status_code}}
+            delay = max(1, int(state_response.headers.get('Retry-After', min(delay * 2, 60))))
+        return {'message': 'Timed out waiting for definition operation.'}
+
     def _resolve_pipeline(self, workspace_id: str, pipeline_id_or_name: str) -> tuple:
         """
         Resolves a pipeline identifier that can be either an ID or a display name.
@@ -307,6 +353,8 @@ class Pipeline:
             "POST", api_url, headers=self.headers, json=payload
         )
 
+        if response.status_code == 202:
+            return self._finish_definition_operation(response, result=False)
         if response.status_code in (200, 202):
             content = response.json() if response.content else {"id": pipeline_id}
             print(f"Successfully updated pipeline {pipeline_id}.")
@@ -442,6 +490,8 @@ class Pipeline:
         # print(f"Extracting definition for pipeline {pipeline_id} from workspace {workspace_id}...")
         response = self._request_with_retry("POST", api_url, headers=self.headers)
 
+        if response.status_code == 202:
+            return self._finish_definition_operation(response, result=True)
         if response.status_code == 200:
             definition = response.json()
             # print("Successfully extracted pipeline definition.")
