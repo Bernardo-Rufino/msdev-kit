@@ -245,7 +245,38 @@ result = df.upgrade_to_gen2_cicd(
 | `get_workspace_data_destinations(workspace_id, max_workers=4)` | Inspect every dataflow, return its destination details, and save destination-only rows as a workbook under `data/dataflows`. The inventory is paced at 200 requests per minute and retries 429 responses. |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, ...)` | Change data destination (Lakehouse/Warehouse). Modes: `preview`, `replace`, `create`. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, ...)` | Create a new Gen2 CI/CD dataflow with a different data destination. |
-| `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. |
+| `upgrade_to_gen2_cicd(..., refresh=False)` | Upgrade a Gen1 or Gen2 dataflow to Gen2 CI/CD. For standard Gen2, verify data destinations and preserve bound connection IDs by default. Set `use_accessible_connections=True` to bind exact connector paths to shared connections visible to the client. Set `refresh=True` to run and wait for the new dataflow's refresh. |
+
+For a standard Gen2 source, the upgrade keeps each destination's workspace,
+item, table, and write method. It returns an error without creating a new item
+if it cannot verify destination preservation. A CI/CD source is copied from its
+definition without retargeting destination references. Gen1 uses its own
+internal storage and has no Gen2 data destination to reuse.
+
+For service principal creation of a standard Gen2 dataflow, use a delegated
+Fabric user token for refresh. Fabric does not allow the service principal to
+run the Dataflow Gen2 CI/CD refresh job. The delegated token is used only for
+the refresh request and polling. Pass an SPN Power BI token separately for
+reading the standard source. Connection credentials are not copied.
+See the [complete setup and runnable example](docs/dataflow_gen2_cicd_upgrade.md)
+before running this against an existing data destination.
+
+```python
+spn_auth = Auth(tenant_id, client_id, client_secret)
+user_auth = Auth()  # interactive user login
+df = Dataflow(spn_auth.get_token('fabric'))
+result = df.upgrade_to_gen2_cicd(
+    workspace_id=workspace_id,
+    dataflow_id=standard_gen2_dataflow_id,
+    source_type='gen2',
+    use_accessible_connections=True,
+    refresh=True,
+    refresh_access_token=user_auth.get_token('fabric'),
+    pbi_access_token=spn_auth.get_token('pbi'),
+)
+```
+Refresh is opt-in because it writes to the configured destination. A failed
+refresh returns its job details and the new item's ID for investigation.
 
 #### Inventory workspace data destinations
 
