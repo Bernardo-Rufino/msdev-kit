@@ -17,6 +17,7 @@ Set the values required by the script you choose. Never commit `.env`.
 | `datasets.py` | Power BI | Stops until workspace and semantic model names are set | None |
 | `dataflow_destinations.py` | Power BI and Fabric dataflow endpoints | Stops until a workspace ID is set | None |
 | `dataflows.py` | Power BI and Fabric dataflow endpoints | Does not perform a write | None |
+| `dataflow_gen2_cicd_upgrade.py` | Power BI and Fabric dataflow endpoints | Does not perform a write without `--execute` | SPN credentials and interactive delegated Fabric user login |
 | `pipelines.py` | Fabric | Stops until pipeline values are set | None |
 | `notebooks.py` | Fabric | Stops until a workspace ID is set | None |
 | `graph.py` | Microsoft Graph | Stops until user and group values are set | None |
@@ -43,6 +44,11 @@ The inventory writes `data/dataflows/workspace_dataflow_destinations_<workspace-
 Its returned DataFrame and workbook contain only tables with data destinations.
 The structured result additionally preserves inspected dataflows with no
 destination and any inspection failures.
+
+For a standard Gen2 to CI/CD upgrade, follow the
+[setup and safety guide](../docs/dataflow_gen2_cicd_upgrade.md). The upgrade
+example creates a new item and refreshes its configured destination only when
+`--execute` is supplied.
 
 ## Write helpers
 

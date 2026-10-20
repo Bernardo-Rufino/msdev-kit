@@ -81,6 +81,7 @@ class Dataflow:
         dataflow_id: str,
         log_retries: bool = True,
         on_rate_limit: Optional[Callable[[float], None]] = None,
+        headers: Optional[Dict] = None,
     ) -> Dict:
         """
         Fetches a dataflow definition from the Power BI REST API.
@@ -103,7 +104,7 @@ class Dataflow:
         r = self._request_with_retry(
             'GET',
             request_url,
-            headers=self.headers,
+            headers=headers if headers is not None else self.headers,
             log_retries=log_retries,
             on_rate_limit=on_rate_limit,
         )
@@ -817,10 +818,15 @@ class Dataflow:
         return {'type': 'unknown', 'workspace_id': '', 'item_id': ''}
 
 
-    def _build_warehouse_annotation(self, query_name: str, columns: List[str]) -> str:
-        """Build the [DataDestinations = {...}] M annotation for a warehouse destination with manual column mappings."""
+    def _build_warehouse_annotation(self, query_name: str, columns: List[str],
+                                    update_method: str = 'Replace') -> str:
+        """Build a manual destination annotation with the source write method."""
+        def escape_m(value: str) -> str:
+            return value.replace('"', '""')
+
         mappings = ', '.join(
-            f'[SourceColumnName = "{col}", DestinationColumnName = "{col}"]'
+            f'[SourceColumnName = "{escape_m(col)}", '
+            f'DestinationColumnName = "{escape_m(col)}"]'
             for col in columns
         )
         return (
@@ -828,7 +834,7 @@ class Dataflow:
             f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
             f'Settings = [Kind = "Manual", AllowCreation = true, '
             f'ColumnSettings = [Mappings = {{{mappings}}}], '
-            f'DynamicSchema = false, UpdateMethod = [Kind = "Replace"], '
+            f'DynamicSchema = false, UpdateMethod = [Kind = "{update_method}"], '
             f'TypeSettings = [Kind = "Table"]]]}}]'
         )
 
@@ -1444,11 +1450,15 @@ class Dataflow:
                 default_dest = dq
                 break
 
-        if default_dest:
-            body = default_dest['body']
-            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-            lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
-            for q in data_queries:
+        dest_map = {dq['name']: dq for dq in dest_queries}
+        for q in data_queries:
+            annotation = q.get('annotation', '')
+            if 'BindToDefaultDestination' in annotation:
+                if not default_dest:
+                    continue
+                body = default_dest['body']
+                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
                 destinations.append({
                     'name': q['name'],
                     'destination_type': 'Lakehouse',
@@ -1458,42 +1468,39 @@ class Dataflow:
                     'mapping_type': 'Automatic',
                     'columns': []
                 })
-        else:
-            # Per-query _DataDestination pattern
-            dest_map = {dq['name']: dq for dq in dest_queries}
-            for q in data_queries:
-                dest_key = q['name'] + '_DataDestination'
-                if dest_key not in dest_map:
-                    continue
-                body = dest_map[dest_key]['body']
-                annotation = q.get('annotation', '')
-                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-                schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
-                mapping_type = self._parse_mapping_type(annotation)
-                columns = self._parse_column_mappings(annotation)
+                continue
 
-                if 'Lakehouse.Contents' in body:
-                    lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
-                    destinations.append({
-                        'name': q['name'],
-                        'destination_type': 'Lakehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': lh_match.group(1) if lh_match else '',
-                        'sql_schema': schema_match.group(1) if schema_match else None,
-                        'mapping_type': mapping_type,
-                        'columns': columns
-                    })
-                elif 'Fabric.Warehouse' in body:
-                    wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
-                    destinations.append({
-                        'name': q['name'],
-                        'destination_type': 'Warehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': wh_match.group(1) if wh_match else '',
-                        'sql_schema': schema_match.group(1) if schema_match else 'dbo',
-                        'mapping_type': mapping_type,
-                        'columns': columns
-                    })
+            dest_key = q['name'] + '_DataDestination'
+            if dest_key not in dest_map:
+                continue
+            body = dest_map[dest_key]['body']
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            schema_match = re.search(r'Schema\s*=\s*"([^"]+)"', body)
+            mapping_type = self._parse_mapping_type(annotation)
+            columns = self._parse_column_mappings(annotation)
+
+            if 'Lakehouse.Contents' in body:
+                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'name': q['name'],
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else None,
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
+            elif 'Fabric.Warehouse' in body:
+                wh_match = re.search(r'warehouseId\s*=\s*"([^"]+)"', body)
+                destinations.append({
+                    'name': q['name'],
+                    'destination_type': 'Warehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': wh_match.group(1) if wh_match else '',
+                    'sql_schema': schema_match.group(1) if schema_match else 'dbo',
+                    'mapping_type': mapping_type,
+                    'columns': columns
+                })
 
         return {'message': 'Success', 'content': destinations}
 
@@ -1547,25 +1554,27 @@ class Dataflow:
                     'columns': columns
                 })
 
-        # Check for DefaultDestination (Lakehouse with BindToDefaultDestination)
-        if not destinations:
-            default_match = re.search(r'shared\s+DefaultDestination\s*=\s*let\b([\s\S]*?);', m_code)
-            if default_match:
-                body = default_match.group(1)
-                ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
-                lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+        # Default-bound queries may coexist with per-query destinations.
+        default_match = re.search(r'shared\s+DefaultDestination\s*=\s*let\b([\s\S]*?);', m_code)
+        if default_match:
+            body = default_match.group(1)
+            ws_match = re.search(r'workspaceId\s*=\s*"([^"]+)"', body)
+            lh_match = re.search(r'lakehouseId\s*=\s*"([^"]+)"', body)
+            per_query_names = {row['name'] for row in destinations}
 
-                bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
-                for bind_match in re.finditer(bind_pattern, m_code):
-                    destinations.append({
-                        'name': bind_match.group(1),
-                        'destination_type': 'Lakehouse',
-                        'workspace_id': ws_match.group(1) if ws_match else '',
-                        'item_id': lh_match.group(1) if lh_match else '',
-                        'sql_schema': None,
-                        'mapping_type': 'Automatic',
-                        'columns': []
-                    })
+            bind_pattern = r'\[BindToDefaultDestination\s*=\s*true\]\s*\n\s*shared\s+(\w+)\s*='
+            for bind_match in re.finditer(bind_pattern, m_code):
+                if bind_match.group(1) in per_query_names:
+                    continue
+                destinations.append({
+                    'name': bind_match.group(1),
+                    'destination_type': 'Lakehouse',
+                    'workspace_id': ws_match.group(1) if ws_match else '',
+                    'item_id': lh_match.group(1) if lh_match else '',
+                    'sql_schema': None,
+                    'mapping_type': 'Automatic',
+                    'columns': []
+                })
 
         return {'message': 'Success', 'content': destinations}
 
@@ -1841,11 +1850,72 @@ class Dataflow:
 
         # 5. Add [DataDestinations] annotation before queries that have destinations
         for query_name in dest_queries:
-            dd_annotation = (
-                f'[DataDestinations = {{[Definition = [Kind = "Reference", '
-                f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
-                f'Settings = [Kind = "Automatic", TypeSettings = [Kind = "Table"]]]}}]\n'
+            if re.search(
+                rf'\[(?:DataDestinations|BindToDefaultDestination)\s*='
+                rf'[^\n]*\]\r?\n\s*shared\s+{re.escape(query_name)}\s*=',
+                result,
+            ):
+                continue
+
+            writer_match = re.search(
+                rf'shared\s+{re.escape(query_name)}_WriteToDataDestination\s*='
+                rf'\s*let\b([\s\S]*?);\r?\n',
+                document,
             )
+            writer = writer_match.group(1) if writer_match else ''
+            actions = set(re.findall(r'TableAction\.(\w+)', writer))
+            if (f'Target = {query_name}_DataDestination' not in writer or
+                    'InsertRows' not in actions or
+                    actions - {'DeleteRows', 'InsertRows'}):
+                raise ValueError(f'Cannot determine write method for {query_name}.')
+            update_method = 'Replace' if 'TableAction.DeleteRows' in writer else 'Append'
+
+            dest_match = re.search(
+                rf'shared\s+{re.escape(query_name)}_DataDestination\s*='
+                rf'\s*let\b([\s\S]*?);\r?\n',
+                document,
+            )
+            dest_body = dest_match.group(1) if dest_match else ''
+            is_warehouse = 'Fabric.Warehouse' in dest_body
+            is_lakehouse = 'Lakehouse.Contents' in dest_body
+            if not (is_warehouse or is_lakehouse):
+                raise ValueError(f'Cannot identify data destination for {query_name}.')
+
+            if is_lakehouse and update_method == 'Replace':
+                dd_annotation = (
+                    f'[DataDestinations = {{[Definition = [Kind = "Reference", '
+                    f'QueryName = "{query_name}_DataDestination", IsNewTarget = true], '
+                    f'Settings = [Kind = "Automatic", TypeSettings = [Kind = "Table"]]]}}]\n'
+                )
+            else:
+                transform_match = re.search(
+                    rf'shared\s+{re.escape(query_name)}_TransformForWriteToDataDestination'
+                    rf'\s*=\s*let\b([\s\S]*?);\r?\n',
+                    document,
+                )
+                transform = transform_match.group(1) if transform_match else ''
+                columns_match = re.fullmatch(
+                    rf'\s*SourceTable\s*=\s*Table\.SelectColumns\('
+                    rf'\s*{re.escape(query_name)}\s*,\s*\{{([^}}]*)\}}\s*\)'
+                    rf'\s*in\s*SourceTable\s*',
+                    transform,
+                )
+                column_list = columns_match.group(1) if columns_match else ''
+                if not re.fullmatch(
+                    r'\s*"(?:[^"]|"")*"(?:\s*,\s*"(?:[^"]|"")*")*\s*',
+                    column_list,
+                ):
+                    raise ValueError(f'Cannot preserve column mapping for {query_name}.')
+                columns = (
+                    [column.replace('""', '"') for column in
+                     re.findall(r'"((?:[^"]|"")*)"', column_list)]
+                    if columns_match else []
+                )
+                if not columns:
+                    raise ValueError(f'Cannot preserve column mapping for {query_name}.')
+                dd_annotation = self._build_warehouse_annotation(
+                    query_name, columns, update_method
+                ) + '\n'
             result = result.replace(f'shared {query_name} =', f'{dd_annotation}shared {query_name} =')
 
         # 6. Simplify DataDestination queries - remove NavigationTable.CreateTableOnDemand wrapper
@@ -1883,7 +1953,7 @@ class Dataflow:
             entry = {
                 'queryId': meta.get('queryId', ''),
                 'queryName': meta.get('queryName', name),
-                'loadEnabled': False
+                'loadEnabled': bool(meta.get('loadEnabled', False))
             }
             if meta.get('queryGroupId'):
                 entry['queryGroupId'] = meta['queryGroupId']
@@ -1935,6 +2005,164 @@ class Dataflow:
             'queriesMetadata': cicd_queries,
             'connections': connections
         }
+
+
+    def _get_dataflow_pbi_datasources(
+        self, workspace_id: str, dataflow_id: str, headers: Optional[Dict] = None
+    ) -> Dict:
+        """Return the data sources bound to a standard Power BI dataflow."""
+        url = f'{self.main_url}/groups/{workspace_id}/dataflows/{dataflow_id}/datasources'
+        response = self._request_with_retry(
+            'GET', url, headers=headers if headers is not None else self.headers
+        )
+        if response.status_code != 200:
+            return {'message': {'error': response.text, 'status_code': response.status_code}}
+        return {'message': 'Success', 'content': response.json().get('value', [])}
+
+
+    def _get_accessible_fabric_connections(self) -> Dict:
+        """List every Fabric connection visible to the current principal."""
+        url = f'{self.fabric_api_base_url}/v1/connections'
+        connections = []
+        while url:
+            response = self._request_with_retry('GET', url, headers=self.headers, timeout=60)
+            if response.status_code != 200:
+                return {'message': {'error': response.text,
+                                    'status_code': response.status_code}}
+            page = response.json()
+            connections.extend(page.get('value', []))
+            url = page.get('continuationUri', '')
+            if url and not url.startswith(f'{self.fabric_api_base_url}/v1/connections'):
+                return {'message': {'error': 'Invalid connections continuation URL.'}}
+        return {'message': 'Success', 'content': connections}
+
+
+    @staticmethod
+    def _bind_accessible_connection_ids(
+        definition: Dict, source_document: str, connections: List[Dict]
+    ) -> None:
+        """Bind exact source and destination paths to visible shared connections.
+
+        Standard Gen2 exports can contain stale connection overrides and IDs
+        for personal connections. Resolve literal M connector paths instead.
+        Unsupported or ambiguous paths fail before item creation.
+        """
+        m_string = r'"((?:[^"]|"")*)"'
+        sql_pattern = re.compile(
+            r'Sql\.Database\s*\(\s*' + m_string + r'\s*,\s*' +
+            m_string + r'\s*(?=[,)])',
+            re.I,
+        )
+        sql_calls = re.findall(r'\bSql\.Database\s*\(', source_document, re.I)
+        sql_matches = list(sql_pattern.finditer(source_document))
+        if len(sql_calls) != len(sql_matches):
+            raise ValueError('Cannot resolve a dynamic SQL connection path.')
+
+        required = set()
+        for match in sql_matches:
+            server = match.group(1).replace('""', '"')
+            database = match.group(2).replace('""', '"')
+            required.add(('SQL', f'{server};{database}'))
+        if re.search(r'\bFabric\.Warehouse\s*\(', source_document, re.I):
+            required.add(('Warehouse', 'Warehouse'))
+        if re.search(r'\bLakehouse\.Contents\s*\(', source_document, re.I):
+            required.add(('Lakehouse', 'Lakehouse'))
+
+        metadata_part = next(
+            part for part in definition['definition']['parts']
+            if part['path'] == 'queryMetadata.json'
+        )
+        metadata = json.loads(base64.b64decode(metadata_part['payload']))
+        known_kinds = {'sql', 'warehouse', 'lakehouse'}
+        unsupported = {
+            item.get('kind', '') for item in metadata.get('connections', [])
+            if item.get('kind', '').casefold() not in known_kinds
+        }
+        if unsupported:
+            raise ValueError(f'Unsupported connection kinds: {sorted(unsupported)}.')
+        if not required:
+            raise ValueError('No supported source or destination connections found.')
+
+        bound = []
+        shareable_types = {'ShareableCloud', 'OnPremisesGateway',
+                           'VirtualNetworkGateway'}
+        for kind, path in sorted(required):
+            matches = [item for item in connections
+                       if item.get('connectivityType') in shareable_types and
+                       (item.get('connectionDetails') or {}).get('type', '').casefold() == kind.casefold() and
+                       (item.get('connectionDetails') or {}).get('path') == path]
+            if len(matches) != 1 or not matches[0].get('id') or not matches[0].get('gatewayId'):
+                raise ValueError(
+                    f'Expected one accessible {kind} connection for {path}; '
+                    f'found {len(matches)}.'
+                )
+            match = matches[0]
+            bound.append({
+                'kind': kind,
+                'path': path,
+                'connectionId': json.dumps({
+                    'ClusterId': match['gatewayId'],
+                    'DatasourceId': match['id'],
+                }, separators=(',', ':')),
+            })
+
+        metadata['connections'] = bound
+        metadata_part['payload'] = base64.b64encode(
+            json.dumps(metadata, indent=2).encode('utf-8')
+        ).decode('utf-8')
+
+
+    @staticmethod
+    def _bind_dataflow_connection_ids(definition: Dict, datasources: List[Dict]) -> None:
+        """Bind source data-source IDs to exact CI/CD connection paths.
+
+        The source export can contain unused connection overrides. Only paths
+        reported by the bound data-source API are retained. Ambiguous or
+        unmatchable data sources fail before the new item is created.
+        """
+        part = next(
+            item for item in definition['definition']['parts']
+            if item['path'] == 'queryMetadata.json'
+        )
+        metadata = json.loads(base64.b64decode(part['payload']))
+        connections = metadata.get('connections', [])
+        bound = []
+        for source in datasources:
+            details = source.get('connectionDetails') or {}
+            source_type = source.get('datasourceType', '').casefold()
+            if source_type == 'sql':
+                server = details.get('server', '')
+                database = details.get('database', '')
+                kind, path = 'sql', f'{server};{database}' if database else server
+            elif source_type == 'extension':
+                kind = str(details.get('extensionDataSourceKind', '')).casefold()
+                path = details.get('extensionDataSourcePath', '')
+            else:
+                kind = source_type
+                path = details.get('path', '')
+
+            matches = [entry for entry in connections
+                       if entry.get('kind', '').casefold() == kind and
+                       entry.get('path') == path]
+            if (not kind or not path or len(matches) != 1 or
+                    not source.get('gatewayId') or not source.get('datasourceId') or
+                    matches[0] in bound):
+                raise ValueError(
+                    f'Cannot identify a unique connection for source data source '
+                    f'{source.get("datasourceId", "unknown")}.')
+            entry = matches[0]
+            entry['connectionId'] = json.dumps({
+                'ClusterId': source['gatewayId'],
+                'DatasourceId': source['datasourceId'],
+            }, separators=(',', ':'))
+            bound.append(entry)
+
+        if connections and not bound:
+            raise ValueError('Source dataflow connections cannot be verified.')
+        metadata['connections'] = bound
+        part['payload'] = base64.b64encode(
+            json.dumps(metadata, indent=2).encode('utf-8')
+        ).decode('utf-8')
 
 
     def _convert_gen2_to_cicd_definition(self, gen2_content: Dict, display_name: str, compute_engine_settings: Dict = None) -> Dict:
@@ -1997,6 +2225,81 @@ class Dataflow:
         }
 
 
+    def _refresh_upgraded_dataflow(
+        self, result: Dict, workspace_id: str, refresh_access_token: str = ''
+    ) -> Dict:
+        """Refresh a newly created CI/CD dataflow and wait for its terminal state."""
+        if result.get('message') != 'Success':
+            return result
+
+        content = result.get('content') or {}
+        item_id = content.get('id') or content.get('artifactMetadata', {}).get('objectId')
+        if not item_id:
+            return {
+                'message': {'error': 'Created dataflow response has no item ID for refresh.'},
+                'content': content,
+            }
+
+        headers = (dict(self.headers, Authorization=f'Bearer {refresh_access_token}')
+                   if refresh_access_token else self.headers)
+        url = (f'{self.fabric_api_base_url}/v1/workspaces/{workspace_id}'
+               f'/items/{item_id}/jobs/Refresh/instances')
+        response = self._request_with_retry(
+            'POST', url, headers=headers,
+            json={'executionData': {'executeOption': 'ApplyChangesIfNeeded'}},
+            timeout=60,
+        )
+        if response.status_code != 202:
+            return {
+                'message': {'error': f'Refresh request failed: {response.text}',
+                            'status_code': response.status_code},
+                'content': content,
+            }
+
+        job_url = response.headers.get('Location', '')
+        if not job_url:
+            return {
+                'message': {'error': 'Refresh accepted without a job location.'},
+                'content': content,
+            }
+
+        deadline = time.monotonic() + 3600
+        while True:
+            if time.monotonic() >= deadline:
+                return {
+                    'message': {'error': 'Timed out waiting for dataflow refresh.'},
+                    'content': content,
+                    'refresh': {'status': 'InProgress', 'location': job_url},
+                }
+            delay = response.headers.get('Retry-After', '5')
+            try:
+                delay = max(float(delay), 0)
+            except (TypeError, ValueError):
+                delay = 5
+            time.sleep(min(delay, max(deadline - time.monotonic(), 0)))
+            response = self._request_with_retry(
+                'GET', job_url, headers=headers, timeout=60,
+            )
+            if response.status_code != 200:
+                return {
+                    'message': {'error': f'Could not check refresh: {response.text}',
+                                'status_code': response.status_code},
+                    'content': content,
+                    'refresh': {'location': job_url},
+                }
+            job = response.json()
+            status = job.get('status', '')
+            if status == 'Completed':
+                result['refresh'] = job
+                return result
+            if status in ('Failed', 'Cancelled', 'Deduped'):
+                return {
+                    'message': {'error': f'Dataflow refresh {status.lower()}.'},
+                    'content': content,
+                    'refresh': job,
+                }
+
+
     def upgrade_to_gen2_cicd(
                 self,
                 workspace_id: str,
@@ -2006,7 +2309,11 @@ class Dataflow:
                 destination_workspace_id: str = '',
                 include_schedule: bool = False,
                 compute_engine_settings: Dict = None,
-                source_type: str = 'gen1') -> Dict:
+                source_type: str = 'gen1',
+                refresh: bool = False,
+                use_accessible_connections: bool = False,
+                refresh_access_token: str = '',
+                pbi_access_token: str = '') -> Dict:
         """
         Upgrades a Dataflow Gen1 or Gen2 (standard) to Dataflow Gen2 CI/CD (native Fabric).
 
@@ -2015,7 +2322,14 @@ class Dataflow:
 
         For Gen2 (standard): Fetches the definition via PBI API and converts it to the CI/CD format
         (mashup.pq, queryMetadata.json, .platform), then creates a new Dataflow Gen2 CI/CD via Fabric API.
+        Preserves each configured destination and verifies its workspace, item, and schema
+        before creating the new item. Fails closed when preservation cannot be verified.
+        Reuses bound source connection IDs by default, or resolves exact shared
+        connection paths visible to the client when requested.
+        Credentials remain in the connection service and are not copied.
         If the dataflow is already CI/CD, it re-creates it with the given display name.
+
+        Gen1 stores data internally and has no Gen2 data destination to reuse.
 
         Note: This method creates a NEW Dataflow Gen2 CI/CD item. The original dataflow is NOT
         deleted automatically. You can use delete_dataflow() to remove the original after verifying
@@ -2038,6 +2352,19 @@ class Dataflow:
                 allowModernEvaluationEngine (bool). If not provided, derives allowFastCopy from the
                 source dataflow's ppdf:fastCopy setting.
             source_type (str): Type of source dataflow - 'gen1' or 'gen2'. Defaults to 'gen1'.
+            refresh (bool): When True, refresh the new dataflow and wait for completion.
+                Defaults to False.
+            use_accessible_connections (bool): For a standard Gen2 source, bind
+                exact connector paths to shared connections visible to this client
+                instead of copying the source dataflow's connection IDs.
+                Defaults to False.
+            refresh_access_token (str): Optional delegated Fabric user token for
+                the refresh job. Useful when the client uses a service principal,
+                which Fabric does not allow to refresh Dataflow Gen2 CI/CD.
+                The token is used only to start and poll the refresh job.
+            pbi_access_token (str): Optional Power BI audience token for reading
+                the standard source definition and bound data sources. Use it
+                when this client's primary token is for the Fabric audience.
 
         Returns:
             Dict: A dictionary containing the status ('Success' or error) and the details of the newly created Dataflow Gen2 CI/CD.
@@ -2051,8 +2378,13 @@ class Dataflow:
         if source_type not in ('gen1', 'gen2'):
             return {'message': 'source_type must be "gen1" or "gen2".', 'content': ''}
 
+        if use_accessible_connections and source_type != 'gen2':
+            return {'message': 'use_accessible_connections requires source_type="gen2".'}
+
         # If no destination workspace provided, use the source workspace
         target_workspace_id = destination_workspace_id if destination_workspace_id != '' else workspace_id
+        pbi_headers = (dict(self.headers, Authorization=f'Bearer {pbi_access_token}')
+                       if pbi_access_token else self.headers)
 
         if source_type == 'gen1':
             # Use the dedicated saveAsNativeArtifact API for Gen1 → Gen2 CI/CD conversion
@@ -2072,7 +2404,7 @@ class Dataflow:
                 body['targetWorkspaceId'] = target_workspace_id
 
             print(f"Converting Gen1 dataflow {dataflow_id} to Gen2 CI/CD via saveAsNativeArtifact...")
-            r = requests.post(url=request_url, headers=self.headers, json=body)
+            r = requests.post(url=request_url, headers=pbi_headers, json=body)
 
             if r.status_code == 200:
                 response = json.loads(r.content)
@@ -2083,7 +2415,10 @@ class Dataflow:
                     print(f"Migration completed with warnings: {errors}")
 
                 print(f"Successfully created Gen2 CI/CD. New artifact ID: {artifact.get('objectId', 'N/A')}")
-                return {'message': 'Success', 'content': response, 'warnings': errors}
+                result = {'message': 'Success', 'content': response, 'warnings': errors}
+                return self._refresh_upgraded_dataflow(
+                    result, target_workspace_id, refresh_access_token
+                ) if refresh else result
             else:
                 try:
                     response = json.loads(r.content)
@@ -2099,16 +2434,23 @@ class Dataflow:
             gen2_definition = self.get_dataflow_gen2_definition(workspace_id, dataflow_id)
 
             if gen2_definition.get('message') == 'Success':
+                if use_accessible_connections:
+                    return {'message': 'use_accessible_connections requires a standard Gen2 source.'}
                 # Already a CI/CD dataflow - re-create with the definition
                 if display_name == '':
                     display_name = gen2_definition['content'].get('displayName', 'dataflow') + '_cicd'
 
                 print(f"Dataflow is already Gen2 CI/CD. Creating copy as '{display_name}' in workspace {target_workspace_id}...")
-                return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
+                result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, gen2_definition['content'])
+                return self._refresh_upgraded_dataflow(
+                    result, target_workspace_id, refresh_access_token
+                ) if refresh else result
 
             # Standard Gen2 - fetch from PBI API and convert
             print("Dataflow is standard Gen2. Fetching definition via PBI API for conversion...")
-            pbi_result = self._get_dataflow_pbi_definition(workspace_id, dataflow_id)
+            pbi_result = self._get_dataflow_pbi_definition(
+                workspace_id, dataflow_id, headers=pbi_headers
+            )
 
             if pbi_result.get('message') != 'Success':
                 return pbi_result
@@ -2119,13 +2461,80 @@ class Dataflow:
             if display_name == '':
                 display_name = pbi_content.get('name', 'dataflow') + '_cicd'
 
-            # Convert PBI API definition to CI/CD format
-            definition = self._convert_gen2_to_cicd_definition(pbi_content, display_name, compute_engine_settings)
+            # Convert PBI API definition to CI/CD format. Do not create a dataflow
+            # when its destination cannot be carried into the new definition.
+            try:
+                definition = self._convert_gen2_to_cicd_definition(
+                    pbi_content, display_name, compute_engine_settings
+                )
+            except ValueError as exc:
+                return {'message': {'error': str(exc)}, 'content': ''}
 
             if definition is None:
                 return {'message': {'error': 'Could not extract mashup document from dataflow. The dataflow may not contain any queries.', 'content': ''}}
 
+            source_destinations = self._get_data_destinations_standard(pbi_content)
+            new_destinations = self._get_data_destinations_cicd(definition)
+            if (source_destinations.get('message') != 'Success' or
+                    new_destinations.get('message') != 'Success'):
+                return {'message': {'error': 'Could not verify data destination preservation.'}, 'content': ''}
+
+            document = pbi_content.get('pbi:mashup', {}).get('document', '')
+            source_tables = source_destinations['content']
+            new_tables = new_destinations['content']
+            declared_writers = len(re.findall(
+                r'shared\s+(?:#"[^"]+_WriteToDataDestination"|'
+                r'\w+_WriteToDataDestination)\s*=', document
+            ))
+            declared_default_binds = len(re.findall(
+                r'\[BindToDefaultDestination\s*=\s*true\]', document, re.I
+            ))
+            if (declared_writers + declared_default_binds > len(source_tables) or
+                    (('_DataDestination' in document or
+                      'DefaultDestination' in document) and not source_tables) or
+                    any(not row['workspace_id'] or not row['item_id'] for row in source_tables)):
+                return {'message': {'error': 'Source data destination cannot be verified.'}, 'content': ''}
+
+            def destination_identity(row):
+                return (
+                    row['name'], row['destination_type'], row['workspace_id'],
+                    row['item_id'], row['sql_schema'],
+                )
+
+            if sorted(map(destination_identity, source_tables)) != sorted(
+                map(destination_identity, new_tables)
+            ):
+                return {'message': {'error': 'Converted data destination differs from the source.'}, 'content': ''}
+
+            # Connection credentials stay in the service. Reuse only the
+            # source's bound connection IDs, never credential material.
+            if use_accessible_connections:
+                accessible_result = self._get_accessible_fabric_connections()
+                if accessible_result.get('message') != 'Success':
+                    return accessible_result
+                try:
+                    self._bind_accessible_connection_ids(
+                        definition, document, accessible_result['content']
+                    )
+                except ValueError as exc:
+                    return {'message': {'error': str(exc)}, 'content': ''}
+            elif pbi_content.get('pbi:mashup', {}).get('connectionOverrides'):
+                datasource_result = self._get_dataflow_pbi_datasources(
+                    workspace_id, dataflow_id, headers=pbi_headers
+                )
+                if datasource_result.get('message') != 'Success':
+                    return datasource_result
+                try:
+                    self._bind_dataflow_connection_ids(
+                        definition, datasource_result['content']
+                    )
+                except ValueError as exc:
+                    return {'message': {'error': str(exc)}, 'content': ''}
+
             # Create the new Gen2 CI/CD dataflow
             print(f"Creating Dataflow Gen2 CI/CD '{display_name}' in workspace {target_workspace_id}...")
-            return self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
+            result = self.create_dataflow_gen2_from_definition(target_workspace_id, display_name, definition)
+            return self._refresh_upgraded_dataflow(
+                result, target_workspace_id, refresh_access_token
+            ) if refresh else result
 

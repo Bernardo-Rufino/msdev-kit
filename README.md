@@ -245,7 +245,38 @@ result = df.upgrade_to_gen2_cicd(
 | `get_workspace_data_destinations(workspace_id, max_workers=4)` | Inspect every dataflow, return its destination details, and save destination-only rows as a workbook under `data/dataflows`. The inventory is paced at 200 requests per minute and retries 429 responses. |
 | `change_data_destination(workspace_id, dataflow_id, destination_type, ...)` | Change data destination (Lakehouse/Warehouse). Modes: `preview`, `replace`, `create`. |
 | `create_dataflow_with_new_destination(workspace_id, dataflow_id, ...)` | Create a new Gen2 CI/CD dataflow with a different data destination. |
-| `upgrade_to_gen2_cicd(...)` | Upgrade a Gen1 or Gen2 (standard) dataflow to Gen2 CI/CD. |
+| `upgrade_to_gen2_cicd(..., refresh=False)` | Upgrade a Gen1 or Gen2 dataflow to Gen2 CI/CD. For standard Gen2, verify data destinations and preserve bound connection IDs by default. Set `use_accessible_connections=True` to bind exact connector paths to shared connections visible to the client. Set `refresh=True` to run and wait for the new dataflow's refresh. |
+
+For a standard Gen2 source, the upgrade keeps each destination's workspace,
+item, table, and write method. It returns an error without creating a new item
+if it cannot verify destination preservation. A CI/CD source is copied from its
+definition without retargeting destination references. Gen1 uses its own
+internal storage and has no Gen2 data destination to reuse.
+
+For service principal creation of a standard Gen2 dataflow, use a delegated
+Fabric user token for refresh. Fabric does not allow the service principal to
+run the Dataflow Gen2 CI/CD refresh job. The delegated token is used only for
+the refresh request and polling. Pass an SPN Power BI token separately for
+reading the standard source. Connection credentials are not copied.
+See the [complete setup and runnable example](docs/dataflow_gen2_cicd_upgrade.md)
+before running this against an existing data destination.
+
+```python
+spn_auth = Auth(tenant_id, client_id, client_secret)
+user_auth = Auth()  # interactive user login
+df = Dataflow(spn_auth.get_token('fabric'))
+result = df.upgrade_to_gen2_cicd(
+    workspace_id=workspace_id,
+    dataflow_id=standard_gen2_dataflow_id,
+    source_type='gen2',
+    use_accessible_connections=True,
+    refresh=True,
+    refresh_access_token=user_auth.get_token('fabric'),
+    pbi_access_token=spn_auth.get_token('pbi'),
+)
+```
+Refresh is opt-in because it writes to the configured destination. A failed
+refresh returns its job details and the new item's ID for investigation.
 
 #### Inventory workspace data destinations
 
@@ -276,6 +307,9 @@ Manage Fabric Data Pipelines.
 ```python
 pipe = Pipeline(auth.get_token('fabric'))
 activities = pipe.get_pipeline_activities(workspace_id, 'My Pipeline')
+all_activities = pipe.get_pipeline_activities(
+    workspace_id, 'My Pipeline', recursive=True
+)
 ```
 
 | Method | Description |
@@ -284,9 +318,15 @@ activities = pipe.get_pipeline_activities(workspace_id, 'My Pipeline')
 | `get_pipeline(workspace_id, pipeline_id)` | Get the metadata of a specific pipeline. |
 | `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a pipeline. |
 | `update_pipeline_definition(workspace_id, pipeline_id, definition)` | Update an existing pipeline definition. |
-| `get_pipeline_activities(workspace_id, pipeline_id_or_name)` | Get activities from a pipeline. Accepts ID or display name. |
+| `get_pipeline_activities(workspace_id, pipeline_id_or_name, max_workers=5, recursive=False)` | Get activities from a pipeline by ID or display name. Set `recursive=True` to include invoked pipelines across workspaces. |
 | `find_pipelines_by_dataflow(workspace_id, dataflow_id_or_name)` | Find pipelines that reference one dataflow or a list of dataflows, fetching each pipeline definition once. |
 | `replace_dataflow_id_in_pipeline(workspace_id, pipeline_id, old_id, new_id)` | Replace a dataflow ID in all RefreshDataflow activities. |
+
+Recursive results are flat and include `workspace_id` on each activity. They
+include activities inside control-flow containers and follow both
+`InvokePipeline` and `ExecutePipeline` references. Each pipeline is scanned
+once, so cycles and repeated invocations do not duplicate downstream
+activities. An inaccessible child returns an error rather than a partial result.
 
 To find pipelines for multiple dataflows, pass IDs, display names, or a mixture
 of both. The method lists the pipelines once and scans each pipeline definition
