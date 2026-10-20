@@ -276,6 +276,9 @@ Manage Fabric Data Pipelines.
 ```python
 pipe = Pipeline(auth.get_token('fabric'))
 activities = pipe.get_pipeline_activities(workspace_id, 'My Pipeline')
+all_activities = pipe.get_pipeline_activities(
+    workspace_id, 'My Pipeline', recursive=True
+)
 ```
 
 | Method | Description |
@@ -284,9 +287,15 @@ activities = pipe.get_pipeline_activities(workspace_id, 'My Pipeline')
 | `get_pipeline(workspace_id, pipeline_id)` | Get the metadata of a specific pipeline. |
 | `get_pipeline_definition(workspace_id, pipeline_id)` | Get the full definition of a pipeline. |
 | `update_pipeline_definition(workspace_id, pipeline_id, definition)` | Update an existing pipeline definition. |
-| `get_pipeline_activities(workspace_id, pipeline_id_or_name)` | Get activities from a pipeline. Accepts ID or display name. |
+| `get_pipeline_activities(workspace_id, pipeline_id_or_name, max_workers=5, recursive=False)` | Get activities from a pipeline by ID or display name. Set `recursive=True` to include invoked pipelines across workspaces. |
 | `find_pipelines_by_dataflow(workspace_id, dataflow_id_or_name)` | Find pipelines that reference one dataflow or a list of dataflows, fetching each pipeline definition once. |
 | `replace_dataflow_id_in_pipeline(workspace_id, pipeline_id, old_id, new_id)` | Replace a dataflow ID in all RefreshDataflow activities. |
+
+Recursive results are flat and include `workspace_id` on each activity. They
+include activities inside control-flow containers and follow both
+`InvokePipeline` and `ExecutePipeline` references. Each pipeline is scanned
+once, so cycles and repeated invocations do not duplicate downstream
+activities. An inaccessible child returns an error rather than a partial result.
 
 To find pipelines for multiple dataflows, pass IDs, display names, or a mixture
 of both. The method lists the pipelines once and scans each pipeline definition
