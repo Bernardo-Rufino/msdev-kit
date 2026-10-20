@@ -60,6 +60,18 @@ class TestUsageMetricsOperations:
         response.headers = {'Location': 'https://api.powerbi.com/refreshes/refresh-id'}
         request.return_value = response
         assert ds.refresh('workspace', 'model')['request_id'] == 'refresh-id'
+        assert 'json' not in request.call_args.kwargs
+
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_refresh_supports_delegated_user_notification(self, request, ds):
+        request.return_value = _make_api_response(202, {})
+
+        assert ds.refresh('workspace', 'model', notify_option='MailOnFailure')['message'] == 'Accepted'
+        assert request.call_args.kwargs['json'] == {'notifyOption': 'MailOnFailure'}
+
+    def test_refresh_rejects_unknown_notification_option(self, ds):
+        with pytest.raises(ValueError, match='notify_option'):
+            ds.refresh('workspace', 'model', notify_option='Never')
 
     @patch.object(MockDataset, '_request_with_retry')
     def test_refresh_history_returns_entries(self, request, ds):

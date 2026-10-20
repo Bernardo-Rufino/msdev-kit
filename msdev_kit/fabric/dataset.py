@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 from . import workspace
 from . import report
-from typing import Dict, List
+from typing import Dict, List, Optional
 from .utilities import create_directory
 from concurrent.futures import ThreadPoolExecutor
 from msdev_kit.http import request_with_retry
@@ -170,12 +170,25 @@ class Dataset:
             raise RuntimeError(f"Takeover failed: HTTP {response.status_code}: {response.text[:500]}")
         return {"message": "Success", "content": None}
 
-    def refresh(self, workspace_id: str, dataset_id: str) -> Dict:
-        """Start a standard refresh and return its request ID when supplied."""
+    def refresh(
+        self, workspace_id: str, dataset_id: str, notify_option: Optional[str] = None
+    ) -> Dict:
+        """Start a standard refresh.
+
+        Supply notify_option for delegated user tokens. Omit it for service
+        principal tokens, which do not support refresh notifications.
+        """
         if not workspace_id or not dataset_id:
             raise ValueError("workspace_id and dataset_id are required")
+        if notify_option is not None and notify_option not in (
+            "NoNotification", "MailOnFailure", "MailOnCompletion"
+        ):
+            raise ValueError("notify_option must be a supported notification option")
         url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
-        response = self._request_with_retry("POST", url, headers=self.headers, timeout=30)
+        request_kwargs = {"headers": self.headers, "timeout": 30}
+        if notify_option is not None:
+            request_kwargs["json"] = {"notifyOption": notify_option}
+        response = self._request_with_retry("POST", url, **request_kwargs)
         if response.status_code != 202:
             raise RuntimeError(f"Refresh request failed: HTTP {response.status_code}: {response.text[:500]}")
         return {
