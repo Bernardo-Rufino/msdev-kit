@@ -5,6 +5,7 @@ from pandas.core.frame import DataFrame
 from typing import Dict, List
 from .utilities import create_directory
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from msdev_kit.http import request_with_retry
 
 
 class Workspace:
@@ -144,16 +145,18 @@ class Workspace:
         Args:
             admin (bool, optional): use the admin API to list all tenant workspaces.
                 Requires tenant-level admin or read-all permissions. Defaults to False.
-            top (int, optional): max results per page (admin only). Defaults to 5000.
+            top (int, optional): max results per page. Defaults to 5000.
 
         Returns:
             Dict: status message and content.
         """
+        if not isinstance(top, int) or isinstance(top, bool) or top < 1 or top > 5000:
+            raise ValueError("top must be an integer between 1 and 5000")
         if admin:
             all_workspaces = []
             request_url = self.main_url + f"/admin/groups?$top={top}"
             while request_url:
-                r = requests.get(url=request_url, headers=self.headers)
+                r = request_with_retry("GET", request_url, headers=self.headers, timeout=30)
                 if r.status_code != 200:
                     body = json.loads(r.content)
                     return {
@@ -164,11 +167,24 @@ class Workspace:
                 request_url = body.get("odata.nextLink", None)
             response = all_workspaces
         else:
-            r = requests.get(url=self.main_url + "/groups", headers=self.headers)
-            if r.status_code != 200:
-                body = json.loads(r.content)
-                return {"message": {"error": body["error"]["message"], "content": body}}
-            response = json.loads(r.content).get("value", [])
+            response = []
+            skip = 0
+            while True:
+                r = request_with_retry(
+                    "GET",
+                    self.main_url + "/groups",
+                    headers=self.headers,
+                    params={"$top": top, "$skip": skip},
+                    timeout=30,
+                )
+                if r.status_code != 200:
+                    body = json.loads(r.content)
+                    return {"message": {"error": body["error"]["message"], "content": body}}
+                page = json.loads(r.content).get("value", [])
+                response.extend(page)
+                if len(page) < top:
+                    break
+                skip += top
 
         df = pd.DataFrame(response)
         df.to_excel(f"{self.workspace_dir}/workspaces_all.xlsx", index=False)

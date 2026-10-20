@@ -170,6 +170,59 @@ class TestGetDataflowPbiDefinitionValidation:
 
 class TestListDataflows:
 
+    def test_can_list_without_writing_shared_excel_export(self, df, monkeypatch):
+        df.workspace = MagicMock()
+        responses = iter([
+            _make_response(200, {'value': []}),
+            _make_response(200, {'value': [{'id': 'new', 'displayName': 'A_cicd'}]}),
+        ])
+        monkeypatch.setattr(df, '_request_with_retry', lambda *args, **kwargs: next(responses))
+        monkeypatch.setattr(pd.DataFrame, 'to_excel',
+                            lambda *args, **kwargs: pytest.fail('Excel export must be skipped'))
+
+        result = df.list_dataflows('ws-1', export=False)
+
+        assert result['message'] == 'Success'
+        assert result['content'][0]['name'] == 'A_cicd'
+        df.workspace.get_workspace_details.assert_not_called()
+
+    def test_reads_every_fabric_page(self, df, tmp_path, monkeypatch):
+        df.workspace = MagicMock()
+        df.workspace.get_workspace_details.return_value = {
+            'message': 'Success', 'content': {'name': 'Test Workspace'}}
+        df.dataflows_dir = str(tmp_path)
+        calls = []
+        responses = iter([
+            _make_response(200, {'value': []}),
+            _make_response(200, {'value': [{'id': 'first', 'displayName': 'First'}],
+                                 'continuationUri': 'https://api.fabric.microsoft.com/next'}),
+            _make_response(200, {'value': [{'id': 'second', 'displayName': 'Second'}]}),
+        ])
+
+        def request(method, url, **kwargs):
+            calls.append(url)
+            return next(responses)
+
+        monkeypatch.setattr(df, '_request_with_retry', request)
+        result = df.list_dataflows('ws-1')
+        assert result['message'] == 'Success'
+        assert {item['id'] for item in result['content']} == {'first', 'second'}
+        assert calls[-1] == 'https://api.fabric.microsoft.com/next'
+
+    def test_fails_if_later_fabric_page_fails(self, df, tmp_path, monkeypatch):
+        df.workspace = MagicMock()
+        df.workspace.get_workspace_details.return_value = {
+            'message': 'Success', 'content': {'name': 'Test Workspace'}}
+        df.dataflows_dir = str(tmp_path)
+        responses = iter([
+            _make_response(200, {'value': []}),
+            _make_response(200, {'value': [], 'continuationUri': 'https://next'}),
+            _make_response(500, {'error': {'message': 'Server error'}}),
+        ])
+        monkeypatch.setattr(df, '_request_with_retry', lambda *args, **kwargs: next(responses))
+        result = df.list_dataflows('ws-1')
+        assert result['message']['status_code'] == 500
+
     def test_uses_generation_2_1_for_fabric_only_dataflows(self, df, tmp_path, monkeypatch):
         df.workspace = MagicMock()
         df.workspace.get_workspace_details.return_value = {

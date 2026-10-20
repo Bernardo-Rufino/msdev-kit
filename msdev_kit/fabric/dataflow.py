@@ -147,7 +147,7 @@ class Dataflow:
         return ''
 
 
-    def list_dataflows(self, workspace_id: str = '') -> Dict:
+    def list_dataflows(self, workspace_id: str = '', export: bool = True) -> Dict:
         """
         List all dataflows in a workspace, including Gen1, Gen2 (standard), and Gen2 CI/CD (Fabric native).
 
@@ -157,6 +157,8 @@ class Dataflow:
 
         Args:
             workspace_id (str): The workspace ID to list dataflows from.
+            export (bool): Save the inventory to Excel. Disable for concurrent
+                read-only discovery when another client uses the same path.
 
         Returns:
             Dict: status message and content (list of dataflow records).
@@ -164,8 +166,9 @@ class Dataflow:
         if workspace_id == '':
             return {'message': 'Missing workspace id, please check.', 'content': ''}
 
-        workspace_name = self.workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
-        filename = f'dataflows_{workspace_name}.xlsx'
+        if export:
+            workspace_name = self.workspace.get_workspace_details(workspace_id).get('content', {}).get('name', 'notFound')
+            filename = f'dataflows_{workspace_name}.xlsx'
 
         # Fetch from PBI API (Gen1 + Gen2 standard)
         pbi_url = f'{self.main_url}/groups/{workspace_id}/dataflows'
@@ -188,7 +191,20 @@ class Dataflow:
 
         fabric_records = []
         if fabric_response.status_code == 200:
-            fabric_data = json.loads(fabric_response.content).get('value', [])
+            fabric_data = []
+            while True:
+                page = fabric_response.json()
+                fabric_data.extend(page.get('value', []))
+                continuation_uri = page.get('continuationUri')
+                if not continuation_uri:
+                    break
+                fabric_response = self._request_with_retry(
+                    'GET', continuation_uri, headers=self.headers
+                )
+                if fabric_response.status_code != 200:
+                    return {'message': {'error': 'Could not read all Fabric dataflow pages',
+                                        'status_code': fabric_response.status_code},
+                            'content': ''}
             fabric_df = pd.json_normalize(fabric_data)
             if not fabric_df.empty:
                 fabric_df['name'] = fabric_df['displayName']
@@ -225,7 +241,8 @@ class Dataflow:
         df = pd.json_normalize(merged)
         if 'name' in df.columns:
             df = df.sort_values(by='name', key=lambda s: s.str.lower()).reset_index(drop=True)
-        df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
+        if export:
+            df.to_excel(f'{self.dataflows_dir}/{filename}', index=False)
         result = json.loads(df.to_json(orient='records'))
 
         return {'message': 'Success', 'content': result}

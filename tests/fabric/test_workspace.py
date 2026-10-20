@@ -15,6 +15,7 @@ class MockWorkspace(Workspace):
         self.main_url = "https://api.powerbi.com/v1.0/myorg"
         self.token = "fake-token"
         self.headers = {"Authorization": f"Bearer {self.token}"}
+        self.workspace_dir = "./data/workspaces"
 
 
 @pytest.fixture
@@ -27,6 +28,43 @@ def _response(status_code=200, body=None):
     response.status_code = status_code
     response.content = json.dumps(body or {}).encode("utf-8")
     return response
+
+
+def test_list_workspaces_pages_non_admin_results(workspace):
+    pages = [
+        _response(body={"value": [{"id": "one"}, {"id": "two"}]}),
+        _response(body={"value": [{"id": "three"}]}),
+    ]
+    with (
+        patch("msdev_kit.fabric.workspace.request_with_retry", side_effect=pages) as request,
+        patch("msdev_kit.fabric.workspace.pd.DataFrame.to_excel") as export,
+    ):
+        result = workspace.list_workspaces(top=2)
+
+    assert [item["id"] for item in result["content"]] == ["one", "two", "three"]
+    assert [call.kwargs["params"]["$skip"] for call in request.call_args_list] == [0, 2]
+    export.assert_called_once()
+
+
+def test_list_workspaces_does_not_export_partial_results(workspace):
+    pages = [
+        _response(body={"value": [{"id": "one"}]}),
+        _response(status_code=403, body={"error": {"message": "forbidden"}}),
+    ]
+    with (
+        patch("msdev_kit.fabric.workspace.request_with_retry", side_effect=pages),
+        patch("msdev_kit.fabric.workspace.pd.DataFrame.to_excel") as export,
+    ):
+        result = workspace.list_workspaces(top=1)
+
+    assert result["message"]["error"] == "forbidden"
+    export.assert_not_called()
+
+
+@pytest.mark.parametrize("top", [0, -1, 5001, 1.5, True])
+def test_list_workspaces_rejects_invalid_page_size(workspace, top):
+    with pytest.raises(ValueError, match="top must be"):
+        workspace.list_workspaces(top=top)
 
 
 @pytest.mark.parametrize(

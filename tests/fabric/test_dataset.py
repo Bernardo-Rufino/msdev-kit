@@ -43,6 +43,47 @@ def _make_api_response(status_code, body):
     return resp
 
 
+class TestUsageMetricsOperations:
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_take_over_uses_group_dataset_endpoint(self, request, ds):
+        request.return_value = _make_api_response(200, {})
+        assert ds.take_over('workspace', 'model')['message'] == 'Success'
+        request.assert_called_once_with(
+            'POST',
+            'https://api.powerbi.com/v1.0/myorg/groups/workspace/datasets/model/Default.TakeOver',
+            headers=ds.headers, timeout=30,
+        )
+
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_refresh_returns_request_id_from_location(self, request, ds):
+        response = _make_api_response(202, {})
+        response.headers = {'Location': 'https://api.powerbi.com/refreshes/refresh-id'}
+        request.return_value = response
+        assert ds.refresh('workspace', 'model')['request_id'] == 'refresh-id'
+
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_refresh_history_returns_entries(self, request, ds):
+        request.return_value = _make_api_response(200, {
+            'value': [{'requestId': 'refresh-id', 'status': 'Completed'}]
+        })
+        assert ds.get_refresh_history('workspace', 'model', top=1)[0]['status'] == 'Completed'
+        assert request.call_args.kwargs['params'] == {'$top': 1}
+
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_get_refresh_schedule_returns_enabled_state(self, request, ds):
+        request.return_value = _make_api_response(200, {'enabled': True, 'times': ['15:04']})
+        assert ds.get_refresh_schedule('workspace', 'model')['enabled'] is True
+        assert request.call_args.args[1].endswith(
+            '/groups/workspace/datasets/model/refreshSchedule'
+        )
+
+    @patch.object(MockDataset, '_request_with_retry')
+    def test_failed_take_over_raises(self, request, ds):
+        request.return_value = _make_api_response(403, {'error': 'forbidden'})
+        with pytest.raises(RuntimeError, match='HTTP 403'):
+            ds.take_over('workspace', 'model')
+
+
 # ===========================================================================
 # _extract_table_expression
 # ===========================================================================

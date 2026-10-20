@@ -5,7 +5,7 @@ import requests
 import pandas as pd
 from . import workspace
 from . import report
-from typing import Dict
+from typing import Dict, List
 from .utilities import create_directory
 from concurrent.futures import ThreadPoolExecutor
 from msdev_kit.http import request_with_retry
@@ -139,7 +139,7 @@ class Dataset:
             filename = f"datasets_{workspace_id}.xlsx"
 
             # Make the request
-            r = requests.get(url=request_url, headers=self.headers)
+            r = self._request_with_retry("GET", request_url, headers=self.headers, timeout=30)
 
             # Get HTTP status and content
             status = r.status_code
@@ -159,6 +159,63 @@ class Dataset:
                 error_message = response["error"]["message"]
 
                 return {"message": {"error": error_message, "content": response}}
+
+    def take_over(self, workspace_id: str, dataset_id: str) -> Dict:
+        """Transfer a semantic model to the authenticated principal."""
+        if not workspace_id or not dataset_id:
+            raise ValueError("workspace_id and dataset_id are required")
+        url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/Default.TakeOver"
+        response = self._request_with_retry("POST", url, headers=self.headers, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(f"Takeover failed: HTTP {response.status_code}: {response.text[:500]}")
+        return {"message": "Success", "content": None}
+
+    def refresh(self, workspace_id: str, dataset_id: str) -> Dict:
+        """Start a standard refresh and return its request ID when supplied."""
+        if not workspace_id or not dataset_id:
+            raise ValueError("workspace_id and dataset_id are required")
+        url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+        response = self._request_with_retry("POST", url, headers=self.headers, timeout=30)
+        if response.status_code != 202:
+            raise RuntimeError(f"Refresh request failed: HTTP {response.status_code}: {response.text[:500]}")
+        return {
+            "message": "Accepted",
+            "request_id": response.headers.get("x-ms-request-id", "")
+            or response.headers.get("Location", "").rstrip("/").rsplit("/", 1)[-1],
+            "location": response.headers.get("Location", ""),
+        }
+
+    def get_refresh_history(self, workspace_id: str, dataset_id: str, top: int = 10) -> List[Dict]:
+        """Return recent refresh attempts for one semantic model."""
+        if not workspace_id or not dataset_id or top < 1:
+            raise ValueError("workspace_id, dataset_id and positive top are required")
+        url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshes"
+        response = self._request_with_retry(
+            "GET", url, headers=self.headers, params={"$top": top}, timeout=30
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"Refresh history failed: HTTP {response.status_code}: {response.text[:500]}")
+        return response.json().get("value", [])
+
+    def list_datasources(self, workspace_id: str, dataset_id: str) -> List[Dict]:
+        """Return the semantic model's bound data sources without credentials."""
+        if not workspace_id or not dataset_id:
+            raise ValueError("workspace_id and dataset_id are required")
+        url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/datasources"
+        response = self._request_with_retry("GET", url, headers=self.headers, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(f"Data source inventory failed: HTTP {response.status_code}: {response.text[:500]}")
+        return response.json().get("value", [])
+
+    def get_refresh_schedule(self, workspace_id: str, dataset_id: str) -> Dict:
+        """Return the configured refresh schedule for one semantic model."""
+        if not workspace_id or not dataset_id:
+            raise ValueError("workspace_id and dataset_id are required")
+        url = f"{self.main_url}/groups/{workspace_id}/datasets/{dataset_id}/refreshSchedule"
+        response = self._request_with_retry("GET", url, headers=self.headers, timeout=30)
+        if response.status_code != 200:
+            raise RuntimeError(f"Refresh schedule failed: HTTP {response.status_code}: {response.text[:500]}")
+        return response.json()
 
     def _post_query(
         self, workspace_id: str, dataset_id: str, query: str

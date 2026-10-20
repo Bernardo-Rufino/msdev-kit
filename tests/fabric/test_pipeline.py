@@ -54,6 +54,48 @@ def _make_pipeline_definition(activities):
     }
 
 
+class TestDefinitionOperations:
+
+    @patch('msdev_kit.fabric.pipeline.time.sleep')
+    def test_update_waits_for_accepted_operation(self, sleep, pl):
+        accepted = _make_response(202, {})
+        accepted.headers = {'x-ms-operation-id': 'op', 'Retry-After': '1'}
+        running = _make_response(200, {'status': 'Running'})
+        succeeded = _make_response(200, {'status': 'Succeeded'})
+        pl._request_with_retry = MagicMock(side_effect=[accepted, running, succeeded])
+
+        result = pl.update_pipeline_definition('ws', 'pipe', {'definition': {'parts': []}})
+
+        assert result['message'] == 'Success'
+        assert pl._request_with_retry.call_count == 3
+        assert sleep.call_count == 2
+
+    @patch('msdev_kit.fabric.pipeline.time.sleep')
+    def test_get_definition_fetches_accepted_operation_result(self, sleep, pl):
+        accepted = _make_response(202, {})
+        accepted.headers = {'x-ms-operation-id': 'op', 'Retry-After': '1'}
+        state = _make_response(200, {'status': 'Succeeded'})
+        result_response = _make_response(200, {'definition': {'parts': []}})
+        pl._request_with_retry = MagicMock(side_effect=[accepted, state, result_response])
+
+        result = pl.get_pipeline_definition('ws', 'pipe')
+
+        assert result['message'] == 'Success'
+        assert result['content'] == {'definition': {'parts': []}}
+        assert pl._request_with_retry.call_args_list[-1].args[1].endswith('/operations/op/result')
+
+    @patch('msdev_kit.fabric.pipeline.time.sleep')
+    def test_update_reports_failed_operation(self, sleep, pl):
+        accepted = _make_response(202, {})
+        accepted.headers = {'x-ms-operation-id': 'op', 'Retry-After': '1'}
+        failed = _make_response(200, {'status': 'Failed', 'error': {'message': 'Invalid'}})
+        pl._request_with_retry = MagicMock(side_effect=[accepted, failed])
+
+        result = pl.update_pipeline_definition('ws', 'pipe', {'definition': {'parts': []}})
+
+        assert result['message']['error']['message'] == 'Invalid'
+
+
 # ===========================================================================
 # get_pipeline
 # ===========================================================================
