@@ -54,7 +54,15 @@ class Pipeline:
 
         while time.monotonic() < deadline:
             time.sleep(min(delay, max(0, deadline - time.monotonic())))
-            state_response = self._request_with_retry('GET', state_url, headers=self.headers)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                state_response = self._request_with_retry(
+                    'GET', state_url, headers=self.headers, timeout=remaining
+                )
+            except requests.Timeout:
+                break
             if state_response.status_code != 200:
                 return {'message': {'error': state_response.text,
                                     'status_code': state_response.status_code}}
@@ -65,9 +73,15 @@ class Pipeline:
                 if not result:
                     return {'message': 'Success', 'content': {}}
                 result_url = f'{state_url}/result'
-                result_response = self._request_with_retry(
-                    'GET', result_url, headers=self.headers
-                )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    result_response = self._request_with_retry(
+                        'GET', result_url, headers=self.headers, timeout=remaining
+                    )
+                except requests.Timeout:
+                    break
                 if result_response.status_code == 200:
                     return {'message': 'Success', 'content': result_response.json()}
                 return {'message': {'error': result_response.text,

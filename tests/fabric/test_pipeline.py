@@ -11,6 +11,7 @@ Usage:
 import json
 import base64
 import pytest
+import requests
 from unittest.mock import MagicMock, call, patch
 from msdev_kit.fabric.pipeline import Pipeline
 
@@ -83,6 +84,21 @@ class TestDefinitionOperations:
         assert result['message'] == 'Success'
         assert result['content'] == {'definition': {'parts': []}}
         assert pl._request_with_retry.call_args_list[-1].args[1].endswith('/operations/op/result')
+        assert all(
+            0 < call.kwargs['timeout'] <= 600
+            for call in pl._request_with_retry.call_args_list[1:]
+        )
+
+    @patch('msdev_kit.fabric.pipeline.time.sleep')
+    def test_get_definition_reports_poll_timeout(self, sleep, pl):
+        accepted = _make_response(202, {})
+        accepted.headers = {'x-ms-operation-id': 'op', 'Retry-After': '1'}
+        pl._request_with_retry = MagicMock(side_effect=[accepted, requests.Timeout()])
+
+        result = pl.get_pipeline_definition('ws', 'pipe')
+
+        assert result['message'] == 'Timed out waiting for definition operation.'
+        assert pl._request_with_retry.call_args_list[1].kwargs['timeout'] <= 600
 
     @patch('msdev_kit.fabric.pipeline.time.sleep')
     def test_update_reports_failed_operation(self, sleep, pl):
