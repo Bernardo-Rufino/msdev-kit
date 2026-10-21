@@ -114,6 +114,23 @@ the same machine, so use it only when secure storage is unavailable:
 token = auth.get_token_for_user('fabric', allow_unencrypted_storage=True)
 ```
 
+To reuse one user's interactive session across runs, configure an explicit
+tenant and pass that user's Azure Identity username. The account record and
+token cache are isolated by tenant and username. Omitting `account` keeps the
+existing fresh interactive behavior:
+
+```python
+auth = Auth(tenant_id="your-tenant-id", client_id="spn-client-id", client_secret="...")
+token = auth.get_token_for_user('fabric', account='person@example.com')
+```
+
+The first call opens a browser. Later calls reuse the saved account record and
+encrypted OS token cache when available. If the signed-in username differs from
+`account`, authentication fails rather than caching the wrong identity. The
+account record contains identifying information but no access token and is
+stored in a private directory. Use `allow_unencrypted_storage=True` only when
+you accept the token exposure risk described above.
+
 ### Credentials
 
 For the bundled examples, copy the template and set the values:
