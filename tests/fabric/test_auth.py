@@ -6,6 +6,7 @@ import stat
 from unittest.mock import MagicMock, patch
 
 import pytest
+from azure.identity import AuthenticationRequiredError
 
 from msdev_kit.auth import Auth
 
@@ -162,6 +163,10 @@ class TestInteractiveAuth:
         assert record_path.read_text() == "serialized record"
         assert mock_browser_cls.call_args.kwargs["tenant_id"] == "tenant-one"
         assert mock_browser_cls.call_args.kwargs["login_hint"] == "person@example.com"
+        assert (
+            mock_browser_cls.call_args.kwargs["disable_automatic_authentication"]
+            is True
+        )
         assert "client_id" not in mock_browser_cls.call_args.kwargs
         credential.authenticate.assert_called_once_with(
             scopes=["https://api.fabric.microsoft.com/.default"]
@@ -251,6 +256,62 @@ class TestInteractiveAuth:
             auth.get_token_for_user(account="person@example.com")
 
         mock_browser_cls.assert_not_called()
+
+    @patch("msdev_kit.auth.AuthenticationRecord.deserialize")
+    @patch("msdev_kit.auth.InteractiveBrowserCredential")
+    @patch("msdev_kit.auth.ClientSecretCredential")
+    def test_cached_user_validates_reauthentication_after_silent_miss(
+        self, mock_spn_cls, mock_browser_cls, mock_deserialize, tmp_path
+    ):
+        auth = Auth("tenant-one", "spn-client", "secret")
+        auth._user_cache_dir = tmp_path
+        digest = hashlib.sha256(b"tenant-one\0person@example.com").hexdigest()
+        record_path = tmp_path / f"{digest}.json"
+        record_path.write_text("old record")
+        mock_deserialize.return_value.username = "person@example.com"
+        credential = mock_browser_cls.return_value
+        credential.get_token.side_effect = [
+            AuthenticationRequiredError(["scope"]),
+            MagicMock(token="new-token"),
+        ]
+        new_record = credential.authenticate.return_value
+        new_record.username = "person@example.com"
+        new_record.serialize.return_value = "new record"
+
+        assert (
+            auth.get_token_for_user("fabric", account="person@example.com")
+            == "new-token"
+        )
+        assert (
+            mock_browser_cls.call_args.kwargs["disable_automatic_authentication"]
+            is True
+        )
+        credential.authenticate.assert_called_once_with(
+            scopes=["https://api.fabric.microsoft.com/.default"]
+        )
+        assert record_path.read_text() == "new record"
+
+    @patch("msdev_kit.auth.AuthenticationRecord.deserialize")
+    @patch("msdev_kit.auth.InteractiveBrowserCredential")
+    @patch("msdev_kit.auth.ClientSecretCredential")
+    def test_cached_user_rejects_wrong_account_after_silent_miss(
+        self, mock_spn_cls, mock_browser_cls, mock_deserialize, tmp_path
+    ):
+        auth = Auth("tenant-one", "spn-client", "secret")
+        auth._user_cache_dir = tmp_path
+        digest = hashlib.sha256(b"tenant-one\0person@example.com").hexdigest()
+        record_path = tmp_path / f"{digest}.json"
+        record_path.write_text("old record")
+        mock_deserialize.return_value.username = "person@example.com"
+        credential = mock_browser_cls.return_value
+        credential.get_token.side_effect = AuthenticationRequiredError(["scope"])
+        credential.authenticate.return_value.username = "other@example.com"
+
+        with pytest.raises(ValueError, match="does not match"):
+            auth.get_token_for_user("fabric", account="person@example.com")
+
+        assert record_path.read_text() == "old record"
+        credential.get_token.assert_called_once()
 
     def test_cached_user_requires_explicit_tenant_and_account(self, tmp_path):
         with patch("msdev_kit.auth.InteractiveBrowserCredential"):

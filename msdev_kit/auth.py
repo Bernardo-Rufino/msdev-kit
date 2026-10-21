@@ -5,6 +5,7 @@ import tempfile
 
 from azure.identity import (
     AuthenticationRecord,
+    AuthenticationRequiredError,
     ClientSecretCredential,
     InteractiveBrowserCredential,
     TokenCachePersistenceOptions,
@@ -107,6 +108,8 @@ class Auth:
         options = {
             "cache_persistence_options": cache_options,
             "tenant_id": self.tenant_id,
+            "disable_automatic_authentication": True,
+            "login_hint": account,
         }
 
         if record_path.exists():
@@ -120,17 +123,17 @@ class Auth:
                     "cached authentication record belongs to another account"
                 )
             options["authentication_record"] = record
-        else:
-            options["login_hint"] = account
-
         credential = InteractiveBrowserCredential(**options)
-        if "authentication_record" not in options:
-            record = credential.authenticate(scopes=[scope])
-            if record.username.casefold() != account.casefold():
-                raise ValueError(
-                    "authenticated account does not match requested account"
-                )
-            self._write_user_record(record_path, record)
+        if "authentication_record" in options:
+            try:
+                return credential.get_token(scope).token
+            except AuthenticationRequiredError:
+                pass
+
+        record = credential.authenticate(scopes=[scope])
+        if record.username.casefold() != account.casefold():
+            raise ValueError("authenticated account does not match requested account")
+        self._write_user_record(record_path, record)
         return credential.get_token(scope).token
 
     def _write_user_record(
