@@ -65,7 +65,7 @@ def require_configured_value(value: str, name: str) -> str:
 def build_auth() -> Auth:
     """Build the shared Azure credential used by Fabric, Graph, and SharePoint."""
     tenant_id, client_id, client_secret = require_environment(
-        "TENANT_ID", "CLIENT_ID", "CLIENT_SECRET"
+        "FABRIC_TENANT_ID", "FABRIC_CLIENT_ID", "FABRIC_CLIENT_SECRET"
     )
     return Auth(tenant_id, client_id, client_secret)
 
@@ -113,6 +113,9 @@ def build_sharepoint_client() -> SharePointClient:
 def build_database_client() -> Database:
     """Build a Fabric SQL endpoint client without opening a connection."""
     endpoint, database, client_id, client_secret = require_environment(
-        "FABRIC_SQL_ENDPOINT", "FABRIC_DATABASE", "CLIENT_ID", "CLIENT_SECRET"
+        "FABRIC_SQL_ENDPOINT",
+        "FABRIC_DATABASE",
+        "FABRIC_CLIENT_ID",
+        "FABRIC_CLIENT_SECRET",
     )
     return Database(endpoint, database, client_id, client_secret)

@@ -25,9 +25,9 @@ Fabric currently rejects a Dataflow Gen2 CI/CD refresh initiated by an SPN with
 poll the refresh job. The user must have Member or higher workspace access and
 access to every connection used by the dataflow. Connection visibility or an
 `Online` connection test alone does not prove that refresh will succeed.
-The interactive login is requested in the configured `TENANT_ID`, which also
-matters when the user is a guest whose home tenant differs from the workspace
-tenant.
+The interactive login is requested in the configured `FABRIC_TENANT_ID`, which
+also matters when the user is a guest whose home tenant differs from the
+workspace tenant.
 
 ## Prerequisites
 
@@ -40,8 +40,9 @@ tenant.
 3. Sign in as a user with Member or higher workspace access and access to all
    those connections. Interactive login must be possible on the machine running
    the script. Do not substitute an SPN token for this user token.
-4. Set `TENANT_ID`, `CLIENT_ID`, and `CLIENT_SECRET` in `.env`, as described in
-   [the examples guide](../examples/README.md). Keep `.env` out of Git.
+4. Set `FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`, and `FABRIC_CLIENT_SECRET` in
+   `.env`, as described in [the examples guide](../examples/README.md). Keep
+   `.env` out of Git.
 
 The exact-match mode currently handles literal `Sql.Database(server, database)`,
 `Fabric.Warehouse`, and `Lakehouse.Contents` calls. Dynamic SQL arguments and

@@ -564,7 +564,7 @@ class Report:
             return {"message": "Missing report id, please check.", "content": ""}
 
         if operations is None:
-            # fabric_auth = Auth(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
+            # fabric_auth = Auth(fabric_tenant_id, fabric_client_id, fabric_client_secret)
             # fabric_token = fabric_auth.get_token('fabric')
             operations = Operations(self.token)
 

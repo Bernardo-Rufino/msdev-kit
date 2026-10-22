@@ -31,10 +31,10 @@ it local:
 cp .env.example .env
 ```
 
-Set `TENANT_ID`, `CLIENT_ID`, and `CLIENT_SECRET` for Fabric, Power BI, Graph,
-and SharePoint examples. The database and SharePoint scripts list their extra
-variables in `.env.example`. See [Examples](../examples/README.md) for each
-script's API audience and safety level.
+Set `FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`, and `FABRIC_CLIENT_SECRET` for
+Fabric, Power BI, Graph, and SharePoint examples. The database and SharePoint
+scripts list their extra variables in `.env.example`. See
+[Examples](../examples/README.md) for each script's API audience and safety level.
 
 ## Run and validate
 
