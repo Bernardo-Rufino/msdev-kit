@@ -24,8 +24,10 @@ Set the values required by the script you choose. Never commit `.env`.
 | `sharepoint.py` | Microsoft Graph | Does not perform a file operation | `SP_HOSTNAME`, `SP_SITE_PATH` |
 | `database.py` | Fabric SQL endpoint | Does not perform a write | `FABRIC_SQL_ENDPOINT`, `FABRIC_DATABASE` |
 
-Any script that reaches an API call requires `TENANT_ID`, `CLIENT_ID`, and
-`CLIENT_SECRET`.
+The Fabric, Power BI, Graph, and SharePoint API examples require
+`FABRIC_TENANT_ID`, `FABRIC_CLIENT_ID`, and `FABRIC_CLIENT_SECRET`. The database
+example uses `FABRIC_CLIENT_ID` and `FABRIC_CLIENT_SECRET` with its SQL endpoint
+and database settings.
 
 ## Run
 
